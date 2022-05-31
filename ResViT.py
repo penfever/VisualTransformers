@@ -250,6 +250,18 @@ transform = torchvision.transforms.Compose(
 train_dataset = torchvision.datasets.Omniglot(DL_PATH, background=True,
                                         download=True, transform=transform)
 
+target_list = torch.tensor(train_dataset.targets)
+
+class_weights = 1./torch.tensor(class_count, dtype=torch.float)
+
+class_weights_all = class_weights[target_list]
+
+weighted_train = torch.utils.data.WeightedRandomSampler(
+    weights=class_weights_all,
+    num_samples=len(class_weights_all),
+    replacement=True
+)
+
 test_dataset = torchvision.datasets.Omniglot(DL_PATH, background=False,
                                        download=True, transform=transform)
 
@@ -307,11 +319,10 @@ def evaluate(model, data_loader, loss_history):
           '{:5}'.format(total_samples) + ' (' +
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n')
 
-N_EPOCHS = 150
-
+N_EPOCHS = 25
 
 model = ViTResNet(BasicBlock, [3, 3, 3]).cuda()
-optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.003)
 
 #optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate,momentum=.9,weight_decay=1e-4)
 #lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[35,48],gamma = 0.1)
