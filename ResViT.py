@@ -153,7 +153,7 @@ class Transformer(nn.Module):
      
 
 class ViTResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=10, dim = 128, num_tokens = 8, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
+    def __init__(self, block, num_blocks, num_classes=1623, dim = 128, num_tokens = 8, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
         super(ViTResNet, self).__init__()
         self.in_planes = 16
         self.L = num_tokens
@@ -235,20 +235,22 @@ class ViTResNet(nn.Module):
 BATCH_SIZE_TRAIN = 100
 BATCH_SIZE_TEST = 100
 
-DL_PATH = "C:\Pytorch\Spyder\CIFAR10_data" # Use your own path
+DL_PATH = "./omniglot_data" # Use your own path
 # CIFAR10: 60000 32x32 color images in 10 classes, with 6000 images per class
 transform = torchvision.transforms.Compose(
-     [torchvision.transforms.RandomHorizontalFlip(),
+     [
+     torchvision.transforms.Grayscale(num_output_channels=3),
+     torchvision.transforms.RandomHorizontalFlip(),
      torchvision.transforms.RandomRotation(10, resample=PIL.Image.BILINEAR),
      torchvision.transforms.RandomAffine(8, translate=(.15,.15)),
      torchvision.transforms.ToTensor(),
      torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
 
 
-train_dataset = torchvision.datasets.CIFAR10(DL_PATH, train=True,
+train_dataset = torchvision.datasets.Omniglot(DL_PATH, background=True,
                                         download=True, transform=transform)
 
-test_dataset = torchvision.datasets.CIFAR10(DL_PATH, train=False,
+test_dataset = torchvision.datasets.Omniglot(DL_PATH, background=False,
                                        download=True, transform=transform)
 
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_TRAIN,
@@ -262,7 +264,12 @@ def train(model, optimizer, data_loader, loss_history):
     model.train()
 
     for i, (data, target) in enumerate(data_loader):
+        if len(target) < BATCH_SIZE_TRAIN:
+          continue
+        data = data.cuda()
+        target = target.cuda()
         optimizer.zero_grad()
+        # print(data.size(), target.size())
         output = F.log_softmax(model(data), dim=1)
         loss = F.nll_loss(output, target)
         loss.backward()
@@ -275,14 +282,17 @@ def train(model, optimizer, data_loader, loss_history):
             loss_history.append(loss.item())
             
 def evaluate(model, data_loader, loss_history):
-    model.eval()
-    
+    model.eval()    
     total_samples = len(data_loader.dataset)
     correct_samples = 0
     total_loss = 0
 
     with torch.no_grad():
         for data, target in data_loader:
+            data = data.cuda()
+            target = target.cuda()
+            if len(target) < BATCH_SIZE_TRAIN:
+              continue
             output = F.log_softmax(model(data), dim=1)
             loss = F.nll_loss(output, target, reduction='sum')
             _, pred = torch.max(output, dim=1)
@@ -300,7 +310,7 @@ def evaluate(model, data_loader, loss_history):
 N_EPOCHS = 150
 
 
-model = ViTResNet(BasicBlock, [3, 3, 3])
+model = ViTResNet(BasicBlock, [3, 3, 3]).cuda()
 optimizer = torch.optim.Adam(model.parameters(), lr=0.003)
 
 #optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate,momentum=.9,weight_decay=1e-4)
