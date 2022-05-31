@@ -158,7 +158,7 @@ class ViTResNet(nn.Module):
         self.in_planes = 16
         self.L = num_tokens
         self.cT = dim
-        
+        self.num_classes = num_classes
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(16)
         self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
@@ -186,7 +186,7 @@ class ViTResNet(nn.Module):
 
         self.to_cls_token = nn.Identity()
 
-        self.nn1 = nn.Linear(dim, num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
+        self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
         torch.nn.init.xavier_uniform_(self.nn1.weight)
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
 
@@ -235,8 +235,7 @@ class ViTResNet(nn.Module):
 BATCH_SIZE_TRAIN = 100
 BATCH_SIZE_TEST = 100
 
-DL_PATH = "./omniglot_data" # Use your own path
-# CIFAR10: 60000 32x32 color images in 10 classes, with 6000 images per class
+DL_PATH = "/Users/benfeuer/Google Drive/My Drive/Datasets/omniglot_merged/" # Use your own path
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
@@ -247,23 +246,26 @@ transform = torchvision.transforms.Compose(
      torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
 
 
-train_dataset = torchvision.datasets.Omniglot(DL_PATH, background=True,
-                                        download=True, transform=transform)
+omniglot = torchvision.datasets.ImageFolder(root=DL_PATH, transform=transform)
 
-target_list = torch.tensor(train_dataset.targets)
+train_set_size = int(len(omniglot) * 0.7)
+valid_set_size = len(omniglot) - train_set_size
+train_dataset, test_dataset = torch.utils.data.random_split(omniglot, [train_set_size, valid_set_size])
 
-class_weights = 1./torch.tensor(class_count, dtype=torch.float)
+# target_list = torch.tensor(train_dataset.img_labels)
 
-class_weights_all = class_weights[target_list]
+# class_weights = 1./torch.tensor(class_count, dtype=torch.float)
 
-weighted_train = torch.utils.data.WeightedRandomSampler(
-    weights=class_weights_all,
-    num_samples=len(class_weights_all),
-    replacement=True
-)
+# class_weights_all = class_weights[target_list]
 
-test_dataset = torchvision.datasets.Omniglot(DL_PATH, background=False,
-                                       download=True, transform=transform)
+# weighted_train = torch.utils.data.WeightedRandomSampler(
+#     weights=class_weights_all,
+#     num_samples=len(class_weights_all),
+#     replacement=True
+# )
+
+# test_dataset = torchvision.datasets.ImageFolder(DL_PATH, background=False,
+#                                        download=True, transform=transform)
 
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_TRAIN,
                                           shuffle=True)
@@ -321,7 +323,7 @@ def evaluate(model, data_loader, loss_history):
 
 N_EPOCHS = 25
 
-model = ViTResNet(BasicBlock, [3, 3, 3]).cuda()
+model = ViTResNet(BasicBlock, [3, 3, 3], num_classes=1623).cuda()
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.003)
 
 #optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate,momentum=.9,weight_decay=1e-4)
