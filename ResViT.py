@@ -29,41 +29,6 @@ class LambdaLayer(nn.Module):
     def forward(self, x):
         return self.lambd(x)
 
-
-class BasicBlock(nn.Module):
-    expansion = 1
-
-    def __init__(self, in_planes, planes, stride=1, option='A'):
-        super(BasicBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(planes)
-        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
-
-        self.shortcut = nn.Sequential()
-        if stride != 1 or in_planes != planes:
-            if option == 'A':
-                """
-                For CIFAR10 ResNet paper uses option A.
-                """
-                self.shortcut = LambdaLayer(lambda x:
-                                            F.pad(x[:, :, ::2, ::2], (0, 0, 0, 0, planes//4, planes//4), "constant", 0))
-            elif option == 'B':
-                self.shortcut = nn.Sequential(
-                     nn.Conv2d(in_planes, self.expansion * planes, kernel_size=1, stride=stride, bias=False),
-                     nn.BatchNorm2d(self.expansion * planes)
-                )
-
-    def forward(self, x):
-        out = F.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
-        out = F.relu(out)
-        #print(out.size())
-        return out
-
-
-
 class Residual(nn.Module):
     def __init__(self, fn):
         super().__init__()
@@ -156,7 +121,7 @@ class Transformer(nn.Module):
      
 
 class ViTResNet(nn.Module):
-    def __init__(self, block, num_blocks, conv_model=None, num_classes=1623, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
+    def __init__(self, conv_model=None, num_classes=1623, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
         super(ViTResNet, self).__init__()
         self.conv_model = conv_model
         self.in_planes = 64 #controls how many channels the model expects
@@ -165,24 +130,10 @@ class ViTResNet(nn.Module):
         self.num_classes = num_classes
         self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
-        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 64, num_blocks[1], stride=1)
-        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=1)
-        self.apply(_weights_init)
-        
-        
-        # Tokenization
-        self.token_wA = nn.Parameter(torch.empty(BATCH_SIZE_TRAIN, self.L, 64),requires_grad = True) #Tokenization parameters
-        torch.nn.init.xavier_uniform_(self.token_wA)
-        self.token_wV = nn.Parameter(torch.empty(BATCH_SIZE_TRAIN, 64, self.cT),requires_grad = True) #Tokenization parameters
-        torch.nn.init.xavier_uniform_(self.token_wV)        
-             
+        self.apply(_weights_init)   
         
         self.pos_embedding = nn.Parameter(torch.empty(1, (num_tokens), dim))        
-        torch.nn.init.normal_(self.pos_embedding, std = .02) # initialized based on the paper
-        #self.patch_conv= nn.Conv2d(64,dim, self.patch_size, stride = self.patch_size) 
-
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, dim)) #initialized based on the paper
+        torch.nn.init.normal_(self.pos_embedding, std = .02) # Initialize to normal distribution. Based on the paper
         self.dropout = nn.Dropout(emb_dropout)
 
         self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
@@ -192,69 +143,18 @@ class ViTResNet(nn.Module):
         self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
         torch.nn.init.xavier_uniform_(self.nn1.weight)
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
-
-
-    def _make_layer(self, block, planes, num_blocks, stride):
-        strides = [stride] + [1]*(num_blocks-1)
-        layers = []
-        for stride in strides:
-            layers.append(block(self.in_planes, planes, stride))
-            self.in_planes = planes * block.expansion
-
-        return nn.Sequential(*layers)
-    
-    
         
     def forward(self, img, mask = None):
-        # print("img: ")
-        # print(img.size())
         if self.conv_model is not None:
             x = conv_model(img)
         else:
             x = F.relu(self.bn1(self.conv1(img)))
-        # print("x: ")
-        # print(x.size())
-        # print("posembed: ")
-        # print(self.pos_embedding.size())
-        # x = self.layer1(x)
-        # x = self.layer2(x)  
-        # x = self.layer3(x)
-        # print("after layer3")
-        # print(x.size())
-        x = rearrange(x, 'b c h w -> b (h w) c') # 64 vectors each with 64 points. These are the sequences or word vecotrs like in NLP
-        # print("after rearrange: ")
-        # print(x.size())
-        # #Tokenization 
-        # wa = rearrange(self.token_wA, 'b h w -> b w h') #Transpose
-        # A = torch.einsum('bij,bjk->bik', x, wa) 
-        # print("A: ")
-        # print(A.size())
-        # A = rearrange(A, 'b h w -> b w h') #Transpose
-        # A = A.softmax(dim=-1)
-
-        # VV= torch.einsum('bij,bjk->bik', x, self.token_wV)
-        # print("VV: ")
-        # print(VV.size())       
-        # T = torch.einsum('bij,bjk->bik', x, VV)
-        # print("after einsum: ")
-        # print(T.size())
-        # print("cls_token:" )
-        # print(self.cls_token.size())
-        # cls_tokens = self.cls_token.expand(img.shape[0], -1, -1)
-        # x = torch.cat((self.cls_token, x), dim=1)
-        # print("after cls_tokens: ")
-        # print(x.size())
+        x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
         x += self.pos_embedding
         x = self.dropout(x)
         x = self.transformer(x, mask) #main game
-        # print("after transformer: ")
-        # print(x.size())
-        x = self.to_cls_token(x[:, 0]) #why do we throw information away after the transformer layer?
-        # print("after cls_token: ")
-        # print(x.size())       
+        x = self.to_cls_token(x[:, 0]) #why do we throw information away after the transformer layer?   
         x = self.nn1(x)
-        
-        
         return x
 
 
@@ -278,28 +178,13 @@ train_set_size = int(len(omniglot) * 0.7)
 valid_set_size = len(omniglot) - train_set_size
 train_dataset, test_dataset = torch.utils.data.random_split(omniglot, [train_set_size, valid_set_size])
 
-# target_list = torch.tensor(train_dataset.img_labels)
-
-# class_weights = 1./torch.tensor(class_count, dtype=torch.float)
-
-# class_weights_all = class_weights[target_list]
-
-# weighted_train = torch.utils.data.WeightedRandomSampler(
-#     weights=class_weights_all,
-#     num_samples=len(class_weights_all),
-#     replacement=True
-# )
-
-# test_dataset = torchvision.datasets.ImageFolder(DL_PATH, background=False,
-#                                        download=True, transform=transform)
-
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_TRAIN,
                                           shuffle=True)
 
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TEST,
                                          shuffle=False)
 
-def train(model, optimizer, data_loader, loss_history):
+def train(model, optimizer, data_loader, loss_history, scheduler=None):
     total_samples = len(data_loader.dataset)
     model.train()
 
@@ -314,7 +199,8 @@ def train(model, optimizer, data_loader, loss_history):
         loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
-
+        if scheduler is not None:
+            scheduler.step()
         if i % 100 == 0:
             print('[' +  '{:5}'.format(i * len(data)) + '/' + '{:5}'.format(total_samples) +
                   ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
@@ -353,14 +239,11 @@ conv_model = timm.create_model('resnet50', pretrained=True)
 conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
 new_out = torch.nn.Conv2d(1024, 64, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
 conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
-# conv_model.fc = torch.nn.Linear(2048, 64)
-model = ViTResNet(BasicBlock, [3, 3, 3], conv_model=conv_model, num_classes=1623).cuda()
-print("Model summary: ")
-print(summary(model, (3, 105, 105)))
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005)
-
-#optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate,momentum=.9,weight_decay=1e-4)
-#lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[35,48],gamma = 0.1)
+model = ViTResNet(conv_model=conv_model, num_classes=1623).cuda()
+# print("Model summary: ")
+# print(summary(model, (3, 105, 105)))
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+#lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[5,10],gamma = 0.1)
 
 train_loss_history, test_loss_history = [], []
 for epoch in range(1, N_EPOCHS + 1):
