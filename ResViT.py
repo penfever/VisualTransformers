@@ -121,7 +121,7 @@ class Transformer(nn.Module):
      
 
 class ViTResNet(nn.Module):
-    def __init__(self, conv_model=None, num_classes=1623, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
+    def __init__(self, conv_model=None, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
         super(ViTResNet, self).__init__()
         self.conv_model = conv_model
         self.in_planes = 64 #controls how many channels the model expects
@@ -165,15 +165,13 @@ DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
-    #  torchvision.transforms.RandomHorizontalFlip(),
-    #  torchvision.transforms.RandomRotation(10, resample=PIL.Image.BILINEAR),
-    #  torchvision.transforms.RandomAffine(8, translate=(.15,.15)),
      torchvision.transforms.ToTensor(),
      torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
 
 
 omniglot = torchvision.datasets.ImageFolder(root=DL_PATH, transform=transform)
-
+labels = torch.unique(torch.tensor(omniglot.targets))
+NUM_CLASSES = len(labels)
 train_set_size = int(len(omniglot) * 0.7)
 valid_set_size = len(omniglot) - train_set_size
 train_dataset, test_dataset = torch.utils.data.random_split(omniglot, [train_set_size, valid_set_size])
@@ -239,7 +237,7 @@ conv_model = timm.create_model('resnet50', pretrained=True)
 conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
 new_out = torch.nn.Conv2d(1024, 64, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
 conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
-model = ViTResNet(conv_model=conv_model, num_classes=1623).cuda()
+model = ViTResNet(conv_model=conv_model, num_classes=NUM_CLASSES).cuda()
 # print("Model summary: ")
 # print(summary(model, (3, 105, 105)))
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
