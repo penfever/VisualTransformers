@@ -6,12 +6,15 @@ Created on Fri Oct 16 11:37:52 2020
 """
 import PIL
 import time
+import timm
 import torch
+from torchsummary import summary
 import torchvision
 import torch.nn.functional as F
 from einops import rearrange
 from torch import nn
 import torch.nn.init as init
+
 def _weights_init(m):
     classname = m.__class__.__name__
     #print(classname)
@@ -153,30 +156,30 @@ class Transformer(nn.Module):
      
 
 class ViTResNet(nn.Module):
-    def __init__(self, block, num_blocks, num_classes=1623, dim = 128, num_tokens = 8, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
+    def __init__(self, block, num_blocks, conv_model=None, num_classes=1623, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
         super(ViTResNet, self).__init__()
-        self.in_planes = 16
+        self.conv_model = conv_model
+        self.in_planes = 64 #controls how many channels the model expects
         self.L = num_tokens
         self.cT = dim
         self.num_classes = num_classes
-        self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.layer1 = self._make_layer(block, 16, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(block, 32, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=2) #8x8 feature maps (64 in total)
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64)
+        self.layer1 = self._make_layer(block, 64, num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(block, 64, num_blocks[1], stride=1)
+        self.layer3 = self._make_layer(block, 64, num_blocks[2], stride=1)
         self.apply(_weights_init)
         
         
         # Tokenization
-        self.token_wA = nn.Parameter(torch.empty(BATCH_SIZE_TRAIN,self.L, 64),requires_grad = True) #Tokenization parameters
+        self.token_wA = nn.Parameter(torch.empty(BATCH_SIZE_TRAIN, self.L, 64),requires_grad = True) #Tokenization parameters
         torch.nn.init.xavier_uniform_(self.token_wA)
-        self.token_wV = nn.Parameter(torch.empty(BATCH_SIZE_TRAIN,64,self.cT),requires_grad = True) #Tokenization parameters
+        self.token_wV = nn.Parameter(torch.empty(BATCH_SIZE_TRAIN, 64, self.cT),requires_grad = True) #Tokenization parameters
         torch.nn.init.xavier_uniform_(self.token_wV)        
              
         
-        self.pos_embedding = nn.Parameter(torch.empty(1, (num_tokens + 1), dim))
+        self.pos_embedding = nn.Parameter(torch.empty(1, (num_tokens), dim))        
         torch.nn.init.normal_(self.pos_embedding, std = .02) # initialized based on the paper
-
         #self.patch_conv= nn.Conv2d(64,dim, self.patch_size, stride = self.patch_size) 
 
         self.cls_token = nn.Parameter(torch.zeros(1, 1, dim)) #initialized based on the paper
@@ -203,29 +206,52 @@ class ViTResNet(nn.Module):
     
         
     def forward(self, img, mask = None):
-        x = F.relu(self.bn1(self.conv1(img)))
-        x = self.layer1(x)
-        x = self.layer2(x)  
-        x = self.layer3(x) 
-        
+        # print("img: ")
+        # print(img.size())
+        if self.conv_model is not None:
+            x = conv_model(img)
+        else:
+            x = F.relu(self.bn1(self.conv1(img)))
+        # print("x: ")
+        # print(x.size())
+        # print("posembed: ")
+        # print(self.pos_embedding.size())
+        # x = self.layer1(x)
+        # x = self.layer2(x)  
+        # x = self.layer3(x)
+        # print("after layer3")
+        # print(x.size())
         x = rearrange(x, 'b c h w -> b (h w) c') # 64 vectors each with 64 points. These are the sequences or word vecotrs like in NLP
+        # print("after rearrange: ")
+        # print(x.size())
+        # #Tokenization 
+        # wa = rearrange(self.token_wA, 'b h w -> b w h') #Transpose
+        # A = torch.einsum('bij,bjk->bik', x, wa) 
+        # print("A: ")
+        # print(A.size())
+        # A = rearrange(A, 'b h w -> b w h') #Transpose
+        # A = A.softmax(dim=-1)
 
-        #Tokenization 
-        wa = rearrange(self.token_wA, 'b h w -> b w h') #Transpose
-        A= torch.einsum('bij,bjk->bik', x, wa) 
-        A = rearrange(A, 'b h w -> b w h') #Transpose
-        A = A.softmax(dim=-1)
-
-        VV= torch.einsum('bij,bjk->bik', x, self.token_wV)       
-        T = torch.einsum('bij,bjk->bik', A, VV)  
-        #print(T.size())
-
-        cls_tokens = self.cls_token.expand(img.shape[0], -1, -1)
-        x = torch.cat((cls_tokens, T), dim=1)
+        # VV= torch.einsum('bij,bjk->bik', x, self.token_wV)
+        # print("VV: ")
+        # print(VV.size())       
+        # T = torch.einsum('bij,bjk->bik', x, VV)
+        # print("after einsum: ")
+        # print(T.size())
+        # print("cls_token:" )
+        # print(self.cls_token.size())
+        # cls_tokens = self.cls_token.expand(img.shape[0], -1, -1)
+        # x = torch.cat((self.cls_token, x), dim=1)
+        # print("after cls_tokens: ")
+        # print(x.size())
         x += self.pos_embedding
         x = self.dropout(x)
         x = self.transformer(x, mask) #main game
-        x = self.to_cls_token(x[:, 0])       
+        # print("after transformer: ")
+        # print(x.size())
+        x = self.to_cls_token(x[:, 0]) #why do we throw information away after the transformer layer?
+        # print("after cls_token: ")
+        # print(x.size())       
         x = self.nn1(x)
         
         
@@ -235,13 +261,13 @@ class ViTResNet(nn.Module):
 BATCH_SIZE_TRAIN = 100
 BATCH_SIZE_TEST = 100
 
-DL_PATH = "/Users/benfeuer/Google Drive/My Drive/Datasets/omniglot_merged/" # Use your own path
+DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
-     torchvision.transforms.RandomHorizontalFlip(),
-     torchvision.transforms.RandomRotation(10, resample=PIL.Image.BILINEAR),
-     torchvision.transforms.RandomAffine(8, translate=(.15,.15)),
+    #  torchvision.transforms.RandomHorizontalFlip(),
+    #  torchvision.transforms.RandomRotation(10, resample=PIL.Image.BILINEAR),
+    #  torchvision.transforms.RandomAffine(8, translate=(.15,.15)),
      torchvision.transforms.ToTensor(),
      torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
 
@@ -321,10 +347,17 @@ def evaluate(model, data_loader, loss_history):
           '{:5}'.format(total_samples) + ' (' +
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n')
 
-N_EPOCHS = 25
+N_EPOCHS = 10
 
-model = ViTResNet(BasicBlock, [3, 3, 3], num_classes=1623).cuda()
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.003)
+conv_model = timm.create_model('resnet50', pretrained=True)
+conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
+new_out = torch.nn.Conv2d(1024, 64, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
+conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
+# conv_model.fc = torch.nn.Linear(2048, 64)
+model = ViTResNet(BasicBlock, [3, 3, 3], conv_model=conv_model, num_classes=1623).cuda()
+print("Model summary: ")
+print(summary(model, (3, 105, 105)))
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.0005)
 
 #optimizer = torch.optim.SGD(model.parameters(), lr=learning_rate,momentum=.9,weight_decay=1e-4)
 #lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[35,48],gamma = 0.1)
@@ -339,7 +372,7 @@ for epoch in range(1, N_EPOCHS + 1):
 
 print('Execution time')
 
-PATH = ".\ViTRes.pt" # Use your own path
+PATH = "./ViTRes.pt" # Use your own path
 torch.save(model.state_dict(), PATH)
 
 
