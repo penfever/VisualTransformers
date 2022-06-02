@@ -161,12 +161,15 @@ class seqTrans(nn.Module):
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
     def forward(self, seq_x, seq_y, mask = None):
-        x = self.conv_model(seq_x) 
-        + self.pos_embedding
+        x = conv_model(seq_x)
+        # print(x.size())
+        x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
+        x += self.pos_embedding
+        # x = self.conv_model(seq_x) + self.pos_embedding
         if seq_y:
             y = self.label_embed(seq_y)
         x = self.dropout(x)
-        x = x.unsqueeze(0)
+        # x = x.unsqueeze(0)
         x = self.transformer(x, mask)
         # x = self.transformer(x, x) #main game
         x = self.to_cls_token(x[:, 0])
@@ -222,10 +225,9 @@ def build_seq(data, target):
         #     embed_full = torch.cat((embed_full, CLS_TOKEN.unsqueeze(0)))
     return embed_full
 
-def train(model, conv_model_alt, optimizer, data_loader, loss_history, scheduler=None):
+def train(model, optimizer, data_loader, loss_history, scheduler=None):
     total_samples = len(data_loader.dataset)
     model.train()
-    conv_model_alt.train()
     for i, (data, target) in enumerate(data_loader):
         if len(target) < BATCH_SIZE_TRAIN:
           continue
@@ -235,10 +237,10 @@ def train(model, conv_model_alt, optimizer, data_loader, loss_history, scheduler
         true_target = target[-1].clone()
         # fseq = build_seq(data, target)
         optimizer.zero_grad()
-        res = conv_model_alt(data)
+        # res = conv_model_alt(data)
         # print(res)
-        output = F.log_softmax(res, dim=1)
-        # output = F.log_softmax(model(data, target), dim=1)
+        # output = F.log_softmax(res, dim=1)
+        output = F.log_softmax(model(data, target), dim=1)
         # print(output, true_target.unsqueeze(0))
         loss = F.nll_loss(output, true_target.unsqueeze(0))
         loss.backward()
@@ -253,7 +255,7 @@ def train(model, conv_model_alt, optimizer, data_loader, loss_history, scheduler
                   '{:6.4f}'.format(loss.item()))
             loss_history.append(loss.item())
             
-def evaluate(model, conv_model_alt, data_loader, loss_history):
+def evaluate(model, data_loader, loss_history):
     model.eval()    
     total_samples = len(data_loader.dataset)
     correct_samples = 0
@@ -267,11 +269,11 @@ def evaluate(model, conv_model_alt, data_loader, loss_history):
             if len(target) < BATCH_SIZE_TRAIN:
               continue
             true_target = target[-1].clone()
-            res = conv_model_alt(data)
+            # res = conv_model_alt(data)
             # print(res)
-            output = F.log_softmax(res, dim=1)
+            # output = F.log_softmax(res, dim=1)
             # fseq = build_seq(data, target)
-            # output = F.log_softmax(model(data, target), dim=1)
+            output = F.log_softmax(model(data, target), dim=1)
             # print(output, true_target)
             loss = F.nll_loss(output, true_target.unsqueeze(0))
             # output = F.log_softmax(model(data), dim=1)
@@ -290,17 +292,17 @@ def evaluate(model, conv_model_alt, data_loader, loss_history):
 N_EPOCHS = 10
 N_TOKENS = 64
 
-# conv_model = timm.create_model('resnet50', pretrained=True)
-# conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
-# new_out = torch.nn.Conv2d(1024, N_TOKENS, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
-# conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
+conv_model = timm.create_model('resnet50', pretrained=True)
+conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
+new_out = torch.nn.Conv2d(1024, N_TOKENS, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
+conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
 
-conv_model_alt = timm.create_model('resnet50', pretrained=True)
-conv_model_alt.fc = torch.nn.Linear(2048, len(labels))
+# conv_model_alt = timm.create_model('resnet50', pretrained=True)
+# conv_model_alt.fc = torch.nn.Linear(2048, 64)
 # conv_model_alt = conv_model_alt.cuda()
 #the extra label represents the class token
 # model = ViTResNet(num_classes=NUM_CLASSES, conv_model=conv_model)
-model = seqTrans(conv_model=conv_model_alt, num_classes=NUM_CLASSES, num_tokens=1).cuda()
+model = seqTrans(conv_model=conv_model, num_classes=NUM_CLASSES, num_tokens=1).cuda()
 #  print("Model summary: ")
 # print(summary(model, (1088)))
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
@@ -310,9 +312,9 @@ train_loss_history, test_loss_history = [], []
 for epoch in range(1, N_EPOCHS + 1):
     print('Epoch:', epoch)
     start_time = time.time()
-    train(model, conv_model_alt, optimizer, train_loader, train_loss_history)
+    train(model, optimizer, train_loader, train_loss_history)
     print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
-    evaluate(model, conv_model_alt, test_loader, test_loss_history)
+    evaluate(model, test_loader, test_loss_history)
 
 print('Execution time')
 
