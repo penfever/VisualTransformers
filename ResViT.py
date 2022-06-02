@@ -1,9 +1,3 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Oct 16 11:37:52 2020
-
-@author: mthossain
-"""
 import PIL
 from copy import deepcopy
 import time
@@ -193,6 +187,7 @@ BATCH_SIZE_TRAIN = 9
 BATCH_SIZE_TEST = 9
 
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
+SUBSET_SIZE = 100
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
@@ -201,11 +196,17 @@ transform = torchvision.transforms.Compose(
 
 
 omniglot = torchvision.datasets.ImageFolder(root=DL_PATH, transform=transform)
+idx = [i for i in range(len(omniglot)) if omniglot.imgs[i][1] < SUBSET_SIZE]
+# build the appropriate subset
+subset = torch.utils.data.Subset(omniglot, idx)
+DATASET = subset
 labels = torch.unique(torch.tensor(omniglot.targets))
+if DATASET == subset:
+    labels = torch.unique(torch.tensor(idx))
 NUM_CLASSES = len(labels)
-train_set_size = int(len(omniglot) * 0.7)
-valid_set_size = len(omniglot) - train_set_size
-train_dataset, test_dataset = torch.utils.data.random_split(omniglot, [train_set_size, valid_set_size])
+train_set_size = int(len(DATASET) * 0.7)
+valid_set_size = len(DATASET) - train_set_size
+train_dataset, test_dataset = torch.utils.data.random_split(DATASET, [train_set_size, valid_set_size])
 
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_TRAIN,
                                           shuffle=True)
@@ -246,13 +247,15 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         #print(fseq.size())
         optimizer.zero_grad()
         output = F.log_softmax(model(fseq), dim=1)
-        print(torch.argmax(output), true_target)
+        # print(torch.argmax(output), true_target)
         loss = F.nll_loss(output, true_target.unsqueeze(0))
         loss.backward()
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
         if i % 100 == 0:
+            print("min, max, mean: ")
+            print(torch.min(output), torch.max(output), torch.mean(output))
             print('[' +  '{:5}'.format(i * len(data)) + '/' + '{:5}'.format(total_samples) +
                   ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
                   '{:6.4f}'.format(loss.item()))
@@ -300,7 +303,8 @@ conv_model_alt = timm.create_model('resnet50', pretrained=True)
 conv_model_alt.fc = torch.nn.Linear(2048, 64)
 conv_model_alt = conv_model_alt.cuda()
 
-labels = torch.unique(torch.tensor(omniglot.targets)) + 1
+# labels = torch.unique(torch.tensor(DATASET.targets)) + 1
+# labels = torch.unique(torch.tensor(omniglot.targets)) + 1
 # len_lab = len(labels)+1
 label_embed = torch.nn.Embedding(len(labels), 64).cuda()
 #the extra label represents the class token
