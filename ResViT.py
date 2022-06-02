@@ -5,6 +5,7 @@ Created on Fri Oct 16 11:37:52 2020
 @author: mthossain
 """
 import PIL
+from copy import deepcopy
 import time
 import timm
 import torch
@@ -145,8 +146,6 @@ class ViTResNet(nn.Module):
 class seqTrans(nn.Module):
     def __init__(self, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
         super(seqTrans, self).__init__()
-
-        self.conv_model = conv_model
         self.in_planes = 64 #controls how many channels the model expects
         self.L = num_tokens
         self.cT = dim
@@ -159,7 +158,9 @@ class seqTrans(nn.Module):
 
         self.transformer = nn.Transformer(d_model=dim, activation="gelu")
         # self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
-        self.nn1 = nn.Linear(dim * num_tokens, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
+
+        self.to_cls_token = nn.Identity()  #TODO: consider using linear, tanh for this a la BERT
+        self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
         torch.nn.init.xavier_uniform_(self.nn1.weight)
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
@@ -179,10 +180,10 @@ class seqTrans(nn.Module):
         x = self.transformer(x, x) #main game
         # print("after transformer: ")
         # print(x.size())
-        # x = self.to_cls_token(x[:, 0]) #why do we throw information away after the transformer layer?
+        x = self.to_cls_token(x[:, 0])
         #print("after CLS: ")
         # print(x.size())
-        x = x.flatten()
+        # x = x.flatten()
         # print(x.size())
         x = self.nn1(x)
         # print(x.size())
@@ -213,14 +214,22 @@ test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TE
                                          shuffle=False)
 
 def build_seq(data, target):
+    # print(target)
+    target[-1] = len(labels)-1 #CLS_TOKEN
+    # print(target)
     label_vec = label_embed(target)
+
+    # print(label_vec.size())
+    # print(data.size())
     image_vec = conv_model_alt(data)
     embed_full = image_vec[0]
     embed_full = torch.stack((embed_full, label_vec[0]))
     for i in range(1, len(data)):
         embed_full = torch.cat((embed_full, image_vec[i].unsqueeze(0)))
-        if i != len(data) - 1:
-            embed_full = torch.cat((embed_full, label_vec[i].unsqueeze(0)))
+        # if i != len(data) - 1:
+        embed_full = torch.cat((embed_full, label_vec[i].unsqueeze(0)))
+        # else:
+        #     embed_full = torch.cat((embed_full, CLS_TOKEN.unsqueeze(0)))
     return embed_full
 
 def train(model, optimizer, data_loader, loss_history, scheduler=None):
@@ -232,10 +241,13 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
           continue
         data = data.cuda()
         target = target.cuda()
+        true_target = target[-1].clone()
         fseq = build_seq(data, target)
+        #print(fseq.size())
         optimizer.zero_grad()
-        output = F.log_softmax(model(fseq), dim=0)
-        loss = F.nll_loss(output, target[-1])
+        output = F.log_softmax(model(fseq), dim=1)
+        print(torch.argmax(output), true_target)
+        loss = F.nll_loss(output, true_target.unsqueeze(0))
         loss.backward()
         optimizer.step()
         if scheduler is not None:
@@ -258,9 +270,11 @@ def evaluate(model, data_loader, loss_history):
             target = target.cuda()
             if len(target) < BATCH_SIZE_TRAIN:
               continue
+            true_target = target[-1].clone()
             fseq = build_seq(data, target)
-            output = F.log_softmax(model(fseq), dim=0)
-            loss = F.nll_loss(output, target[-1])
+            output = F.log_softmax(model(fseq), dim=1)
+            # print(output, true_target)
+            loss = F.nll_loss(output, true_target.unsqueeze(0))
             # output = F.log_softmax(model(data), dim=1)
             # loss = F.nll_loss(output, target, reduction='sum')
             _, pred = torch.max(output, dim=1)
@@ -277,19 +291,21 @@ def evaluate(model, data_loader, loss_history):
 N_EPOCHS = 10
 N_TOKENS = 64
 
-conv_model = timm.create_model('resnet50', pretrained=True)
-conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
-new_out = torch.nn.Conv2d(1024, N_TOKENS, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
-conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
+# conv_model = timm.create_model('resnet50', pretrained=True)
+# conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
+# new_out = torch.nn.Conv2d(1024, N_TOKENS, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
+# conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
 
 conv_model_alt = timm.create_model('resnet50', pretrained=True)
 conv_model_alt.fc = torch.nn.Linear(2048, 64)
 conv_model_alt = conv_model_alt.cuda()
 
-labels = torch.unique(torch.tensor(omniglot.targets))
+labels = torch.unique(torch.tensor(omniglot.targets)) + 1
+# len_lab = len(labels)+1
 label_embed = torch.nn.Embedding(len(labels), 64).cuda()
+#the extra label represents the class token
 # model = ViTResNet(num_classes=NUM_CLASSES, conv_model=conv_model)
-model = seqTrans(num_classes=NUM_CLASSES, num_tokens=17).cuda()
+model = seqTrans(num_classes=NUM_CLASSES, num_tokens=18).cuda()
 #  print("Model summary: ")
 # print(summary(model, (1088)))
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
@@ -307,7 +323,6 @@ print('Execution time')
 
 PATH = "./ViTRes.pt" # Use your own path
 torch.save(model.state_dict(), PATH)
-
 
 # =============================================================================
 # model = ViT()
