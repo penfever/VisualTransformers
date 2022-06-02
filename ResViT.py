@@ -157,11 +157,9 @@ class seqTrans(nn.Module):
         torch.nn.init.normal_(self.pos_embedding, std = .02) # Initialize to normal distribution. Based on the paper
         self.dropout = nn.Dropout(emb_dropout)
 
-        self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
-
-        self.to_cls_token = nn.Identity()
-
-        self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
+        self.transformer = nn.Transformer(d_model=dim, activation="gelu")
+        # self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
+        self.nn1 = nn.Linear(dim * num_tokens, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
         torch.nn.init.xavier_uniform_(self.nn1.weight)
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
@@ -178,9 +176,16 @@ class seqTrans(nn.Module):
         x = self.dropout(x)
         x = x.unsqueeze(0)
         # print(x.size())
-        x = self.transformer(x, mask) #main game
-        x = self.to_cls_token(x[:, 0]) #why do we throw information away after the transformer layer?   
+        x = self.transformer(x, x) #main game
+        # print("after transformer: ")
+        # print(x.size())
+        # x = self.to_cls_token(x[:, 0]) #why do we throw information away after the transformer layer?
+        #print("after CLS: ")
+        # print(x.size())
+        x = x.flatten()
+        # print(x.size())
         x = self.nn1(x)
+        # print(x.size())
         return x
 
 BATCH_SIZE_TRAIN = 9
@@ -229,8 +234,8 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         target = target.cuda()
         fseq = build_seq(data, target)
         optimizer.zero_grad()
-        output = F.log_softmax(model(fseq), dim=1)
-        loss = F.nll_loss(output, target[-1].unsqueeze(0))
+        output = F.log_softmax(model(fseq), dim=0)
+        loss = F.nll_loss(output, target[-1])
         loss.backward()
         optimizer.step()
         if scheduler is not None:
@@ -254,8 +259,8 @@ def evaluate(model, data_loader, loss_history):
             if len(target) < BATCH_SIZE_TRAIN:
               continue
             fseq = build_seq(data, target)
-            output = F.log_softmax(model(fseq), dim=1)
-            loss = F.nll_loss(output, target[-1].unsqueeze(0))
+            output = F.log_softmax(model(fseq), dim=0)
+            loss = F.nll_loss(output, target[-1])
             # output = F.log_softmax(model(data), dim=1)
             # loss = F.nll_loss(output, target, reduction='sum')
             _, pred = torch.max(output, dim=1)
