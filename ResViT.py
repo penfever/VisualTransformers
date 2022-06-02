@@ -138,8 +138,10 @@ class ViTResNet(nn.Module):
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
 
 class seqTrans(nn.Module):
-    def __init__(self, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
+    def __init__(self, conv_model, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
         super(seqTrans, self).__init__()
+        self.conv_model = conv_model
+        self.label_embed = torch.nn.Embedding(len(labels), 64).cuda()
         self.in_planes = 64 #controls how many channels the model expects
         self.L = num_tokens
         self.cT = dim
@@ -150,41 +152,29 @@ class seqTrans(nn.Module):
         torch.nn.init.normal_(self.pos_embedding, std = .02) # Initialize to normal distribution. Based on the paper
         self.dropout = nn.Dropout(emb_dropout)
 
-        self.transformer = nn.Transformer(d_model=dim, activation="gelu")
-        # self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
+        # self.transformer = nn.Transformer(d_model=dim, activation="gelu")
+        self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
 
         self.to_cls_token = nn.Identity()  #TODO: consider using linear, tanh for this a la BERT
         self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
         torch.nn.init.xavier_uniform_(self.nn1.weight)
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
-    def forward(self, seq, mask = None):
-        # x = self.conv_model(img)
-        # if self.conv_model is not None:
-        #     x = conv_model(img)
-        # else:
-        #     x = F.relu(self.bn1(self.conv1(img)))
-        # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
-        #print("initial shapes: ")
-        #print(seq.size(), self.pos_embedding.size())
-        x = seq + self.pos_embedding
+    def forward(self, seq_x, seq_y, mask = None):
+        x = self.conv_model(seq_x) 
+        + self.pos_embedding
+        if seq_y:
+            y = self.label_embed(seq_y)
         x = self.dropout(x)
         x = x.unsqueeze(0)
-        # print(x.size())
-        x = self.transformer(x, x) #main game
-        # print("after transformer: ")
-        # print(x.size())
+        x = self.transformer(x, mask)
+        # x = self.transformer(x, x) #main game
         x = self.to_cls_token(x[:, 0])
-        #print("after CLS: ")
-        # print(x.size())
-        # x = x.flatten()
-        # print(x.size())
         x = self.nn1(x)
-        # print(x.size())
         return x
 
-BATCH_SIZE_TRAIN = 9
-BATCH_SIZE_TEST = 9
+BATCH_SIZE_TRAIN = 1
+BATCH_SIZE_TEST = 1
 
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
@@ -218,7 +208,6 @@ def build_seq(data, target):
     # print(target)
     target[-1] = len(labels)-1 #CLS_TOKEN
     # print(target)
-    label_vec = label_embed(target)
 
     # print(label_vec.size())
     # print(data.size())
@@ -233,21 +222,24 @@ def build_seq(data, target):
         #     embed_full = torch.cat((embed_full, CLS_TOKEN.unsqueeze(0)))
     return embed_full
 
-def train(model, optimizer, data_loader, loss_history, scheduler=None):
+def train(model, conv_model_alt, optimizer, data_loader, loss_history, scheduler=None):
     total_samples = len(data_loader.dataset)
     model.train()
-
+    conv_model_alt.train()
     for i, (data, target) in enumerate(data_loader):
         if len(target) < BATCH_SIZE_TRAIN:
           continue
         data = data.cuda()
         target = target.cuda()
+        # seq = data
         true_target = target[-1].clone()
-        fseq = build_seq(data, target)
-        #print(fseq.size())
+        # fseq = build_seq(data, target)
         optimizer.zero_grad()
-        output = F.log_softmax(model(fseq), dim=1)
-        # print(torch.argmax(output), true_target)
+        res = conv_model_alt(data)
+        # print(res)
+        output = F.log_softmax(res, dim=1)
+        # output = F.log_softmax(model(data, target), dim=1)
+        # print(output, true_target.unsqueeze(0))
         loss = F.nll_loss(output, true_target.unsqueeze(0))
         loss.backward()
         optimizer.step()
@@ -261,7 +253,7 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
                   '{:6.4f}'.format(loss.item()))
             loss_history.append(loss.item())
             
-def evaluate(model, data_loader, loss_history):
+def evaluate(model, conv_model_alt, data_loader, loss_history):
     model.eval()    
     total_samples = len(data_loader.dataset)
     correct_samples = 0
@@ -271,11 +263,15 @@ def evaluate(model, data_loader, loss_history):
         for data, target in data_loader:
             data = data.cuda()
             target = target.cuda()
+            # seq = data
             if len(target) < BATCH_SIZE_TRAIN:
               continue
             true_target = target[-1].clone()
-            fseq = build_seq(data, target)
-            output = F.log_softmax(model(fseq), dim=1)
+            res = conv_model_alt(data)
+            # print(res)
+            output = F.log_softmax(res, dim=1)
+            # fseq = build_seq(data, target)
+            # output = F.log_softmax(model(data, target), dim=1)
             # print(output, true_target)
             loss = F.nll_loss(output, true_target.unsqueeze(0))
             # output = F.log_softmax(model(data), dim=1)
@@ -300,16 +296,11 @@ N_TOKENS = 64
 # conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
 
 conv_model_alt = timm.create_model('resnet50', pretrained=True)
-conv_model_alt.fc = torch.nn.Linear(2048, 64)
-conv_model_alt = conv_model_alt.cuda()
-
-# labels = torch.unique(torch.tensor(DATASET.targets)) + 1
-# labels = torch.unique(torch.tensor(omniglot.targets)) + 1
-# len_lab = len(labels)+1
-label_embed = torch.nn.Embedding(len(labels), 64).cuda()
+conv_model_alt.fc = torch.nn.Linear(2048, len(labels))
+# conv_model_alt = conv_model_alt.cuda()
 #the extra label represents the class token
 # model = ViTResNet(num_classes=NUM_CLASSES, conv_model=conv_model)
-model = seqTrans(num_classes=NUM_CLASSES, num_tokens=18).cuda()
+model = seqTrans(conv_model=conv_model_alt, num_classes=NUM_CLASSES, num_tokens=1).cuda()
 #  print("Model summary: ")
 # print(summary(model, (1088)))
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
@@ -319,9 +310,9 @@ train_loss_history, test_loss_history = [], []
 for epoch in range(1, N_EPOCHS + 1):
     print('Epoch:', epoch)
     start_time = time.time()
-    train(model, optimizer, train_loader, train_loss_history)
+    train(model, conv_model_alt, optimizer, train_loader, train_loss_history)
     print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
-    evaluate(model, test_loader, test_loss_history)
+    evaluate(model, conv_model_alt, test_loader, test_loss_history)
 
 print('Execution time')
 
