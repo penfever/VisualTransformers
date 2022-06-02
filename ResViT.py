@@ -118,18 +118,46 @@ class Transformer(nn.Module):
             x = attention(x, mask = mask) # go to attention
             x = mlp(x) #go to MLP_Block
         return x
-     
+
+class VisEmbed(nn.Module):
+    """
+    Sequence-wise embedding
+    """
+
+    def __init__(self, backbone: nn.Module, label_embed: nn.Module):
+        """
+        :param embed_size: embedding size of token embedding
+        :param dropout: dropout rate
+        """
+        super().__init__()
+        self.label_embed = label_embed
+        self.backbone = backbone
+
+    def forward(self, support_images: torch.Tensor, support_labels: torch.Tensor):
+        support_images = support_images.cuda()
+        support_labels = support_labels.cuda()
+        embedding = self.backbone(support_images)
+        embedding = rearrange(embedding, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
+        label_embedding = self.label_embed(support_labels)
+        embed_full = embedding[0]
+        embed_full = torch.cat((embed_full, label_embedding[0].unsqueeze(0)))
+        for i in range(1, len(embedding)):
+          embed_full = torch.cat((embed_full, embedding[i]))
+          if i != len(embedding) - 1:
+            embed_full = torch.cat((embed_full, label_embedding[i].unsqueeze(0)))
+        return embed_full     
 
 class ViTResNet(nn.Module):
-    def __init__(self, conv_model=None, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
+    def __init__(self, conv_model=None, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
         super(ViTResNet, self).__init__()
+
+        self.label_embed = torch.nn.Embedding(num_classes, num_tokens) #TODO: num_tokens? dim?
         self.conv_model = conv_model
+        self.vis_embed = VisEmbed(backbone=self.conv_model, label_embed=self.label_embed)
         self.in_planes = 64 #controls how many channels the model expects
         self.L = num_tokens
         self.cT = dim
         self.num_classes = num_classes
-        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(64)
         self.apply(_weights_init)   
         
         self.pos_embedding = nn.Parameter(torch.empty(1, (num_tokens), dim))        
@@ -145,15 +173,15 @@ class ViTResNet(nn.Module):
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
     def forward(self, img, mask = None):
-        if self.conv_model is not None:
-            x = conv_model(img)
-        else:
-            x = F.relu(self.bn1(self.conv1(img)))
-        x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
+        x = self.conv_model(img)
+        # if self.conv_model is not None:
+        #     x = conv_model(img)
+        # else:
+        #     x = F.relu(self.bn1(self.conv1(img)))
         x += self.pos_embedding
         x = self.dropout(x)
-        x = self.transformer(x, mask) #main game
         x = self.to_cls_token(x[:, 0]) #why do we throw information away after the transformer layer?   
+        x = self.transformer(x, mask) #main game
         x = self.nn1(x)
         return x
 
