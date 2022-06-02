@@ -228,14 +228,8 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         data = data.cuda()
         target = target.cuda()
         fseq = build_seq(data, target)
-        # print(fseq.size())
         optimizer.zero_grad()
-        # print(data.size(), target.size())
-        # output = F.log_softmax(model(data), dim=1)
         output = F.log_softmax(model(fseq), dim=1)
-        #print("post-model: ")
-        #print(output.size(), target[8].size())
-        #print(target[len(target)-1])
         loss = F.nll_loss(output, target[-1].unsqueeze(0))
         loss.backward()
         optimizer.step()
@@ -259,10 +253,12 @@ def evaluate(model, data_loader, loss_history):
             target = target.cuda()
             if len(target) < BATCH_SIZE_TRAIN:
               continue
-            output = F.log_softmax(model(data), dim=1)
-            loss = F.nll_loss(output, target, reduction='sum')
+            fseq = build_seq(data, target)
+            output = F.log_softmax(model(fseq), dim=1)
+            loss = F.nll_loss(output, target[-1].unsqueeze(0))
+            # output = F.log_softmax(model(data), dim=1)
+            # loss = F.nll_loss(output, target, reduction='sum')
             _, pred = torch.max(output, dim=1)
-            
             total_loss += loss.item()
             correct_samples += pred.eq(target).sum()
 
