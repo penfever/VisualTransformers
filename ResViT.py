@@ -112,43 +112,35 @@ class Transformer(nn.Module):
         for attention, mlp in self.layers:
             x = attention(x, mask = mask) # go to attention
             x = mlp(x) #go to MLP_Block
-        return x    
+        return x
 
-class ViTResNet(nn.Module):
-    def __init__(self, conv_model=None, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
-        super(ViTResNet, self).__init__()
-
-        self.conv_model = conv_model
-        self.in_planes = 64 #controls how many channels the model expects
-        self.L = num_tokens
-        self.cT = dim
-        self.num_classes = num_classes
-        self.apply(_weights_init)   
-        
-        self.pos_embedding = nn.Parameter(torch.empty(num_tokens))        
-        torch.nn.init.normal_(self.pos_embedding, std = .02) # Initialize to normal distribution. Based on the paper
-        self.dropout = nn.Dropout(emb_dropout)
-
-        self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
-
-        self.to_cls_token = nn.Identity()
-
-        self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
-        torch.nn.init.xavier_uniform_(self.nn1.weight)
-        torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
+def build_seq(image_vec, label_vec):
+    embed_full = image_vec[0, :, :].unsqueeze(0)
+    # print("embed full size: ")
+    # print(embed_full.size())
+    # print(label_vec.size())
+    embed_full = torch.cat((embed_full, label_vec[0].unsqueeze(0)))
+    # print("after stacK: ")
+    # print(embed_full.size())
+    for i in range(1, len(image_vec)):
+        embed_full = torch.cat((embed_full, image_vec[i].unsqueeze(0)))
+        # if i != len(data) - 1:
+        embed_full = torch.cat((embed_full, label_vec[i].unsqueeze(0)))
+        # else:
+        #     embed_full = torch.cat((embed_full, CLS_TOKEN.unsqueeze(0)))
+    return embed_full
 
 class seqTrans(nn.Module):
     def __init__(self, conv_model, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
         super(seqTrans, self).__init__()
+        self.dim = dim
         self.conv_model = conv_model
-        self.label_embed = torch.nn.Embedding(len(labels), 64).cuda()
         self.in_planes = 64 #controls how many channels the model expects
-        self.L = num_tokens
-        self.cT = dim
+        self.label_embed = torch.nn.Embedding(len(labels), dim * self.in_planes)
         self.num_classes = num_classes
-        self.apply(_weights_init)   
+        self.apply(_weights_init)
         
-        self.pos_embedding = nn.Parameter(torch.empty((num_tokens), dim))        
+        self.pos_embedding = nn.Parameter(torch.empty(num_tokens, dim, self.in_planes))        
         torch.nn.init.normal_(self.pos_embedding, std = .02) # Initialize to normal distribution. Based on the paper
         self.dropout = nn.Dropout(emb_dropout)
 
@@ -156,7 +148,7 @@ class seqTrans(nn.Module):
         self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
 
         self.to_cls_token = nn.Identity()  #TODO: consider using linear, tanh for this a la BERT
-        self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
+        self.nn1 = nn.Linear(dim * num_tokens * 2, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
         torch.nn.init.xavier_uniform_(self.nn1.weight)
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
@@ -165,19 +157,34 @@ class seqTrans(nn.Module):
         # print(x.size())
         x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
         x += self.pos_embedding
-        # x = self.conv_model(seq_x) + self.pos_embedding
-        if seq_y:
+        # print(x.size())
+        if len(x[0]) > 1:
+            seq_y[-1] = self.num_classes-1 #CLS_TOKEN
+            # print("len seq y: ")
+            # print(len(seq_y))
             y = self.label_embed(seq_y)
+            y = y.view(len(seq_y), self.dim, self.in_planes)
+            # print("label embed size: ")
+            #print(y.size())
+            x = build_seq(x, y)
+        # print("after seq build: ")
+        # print(x.size())
+        # x = self.conv_model(seq_x) + self.pos_embedding
         x = self.dropout(x)
         # x = x.unsqueeze(0)
         x = self.transformer(x, mask)
+        # print("after transformer: ")
+        # print(x.size())
         # x = self.transformer(x, x) #main game
         x = self.to_cls_token(x[:, 0])
+        x = x.flatten()
+        # print("after CLS token: ")
+        # print(x.size())
         x = self.nn1(x)
         return x
 
-BATCH_SIZE_TRAIN = 1
-BATCH_SIZE_TEST = 1
+BATCH_SIZE_TRAIN = 4
+BATCH_SIZE_TEST = 4
 
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
@@ -195,8 +202,9 @@ subset = torch.utils.data.Subset(omniglot, idx)
 DATASET = subset
 labels = torch.unique(torch.tensor(omniglot.targets))
 if DATASET == subset:
-    labels = torch.unique(torch.tensor(idx))
+    labels = torch.tensor([i for i in range(SUBSET_SIZE)])
 NUM_CLASSES = len(labels)
+print("num classes is {}".format(NUM_CLASSES))
 train_set_size = int(len(DATASET) * 0.7)
 valid_set_size = len(DATASET) - train_set_size
 train_dataset, test_dataset = torch.utils.data.random_split(DATASET, [train_set_size, valid_set_size])
@@ -206,24 +214,6 @@ train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_
 
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TEST,
                                          shuffle=False)
-
-def build_seq(data, target):
-    # print(target)
-    target[-1] = len(labels)-1 #CLS_TOKEN
-    # print(target)
-
-    # print(label_vec.size())
-    # print(data.size())
-    image_vec = conv_model_alt(data)
-    embed_full = image_vec[0]
-    embed_full = torch.stack((embed_full, label_vec[0]))
-    for i in range(1, len(data)):
-        embed_full = torch.cat((embed_full, image_vec[i].unsqueeze(0)))
-        # if i != len(data) - 1:
-        embed_full = torch.cat((embed_full, label_vec[i].unsqueeze(0)))
-        # else:
-        #     embed_full = torch.cat((embed_full, CLS_TOKEN.unsqueeze(0)))
-    return embed_full
 
 def train(model, optimizer, data_loader, loss_history, scheduler=None):
     total_samples = len(data_loader.dataset)
@@ -240,16 +230,15 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         # res = conv_model_alt(data)
         # print(res)
         # output = F.log_softmax(res, dim=1)
-        output = F.log_softmax(model(data, target), dim=1)
-        # print(output, true_target.unsqueeze(0))
-        loss = F.nll_loss(output, true_target.unsqueeze(0))
+        output = F.log_softmax(model(data, target), dim=0)
+        # print(output.size(), true_target.unsqueeze(0).size())
+        loss = F.nll_loss(output, true_target)
         loss.backward()
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
         if i % 100 == 0:
-            print("min, max, mean: ")
-            print(torch.min(output), torch.max(output), torch.mean(output))
+            print("LOGSOFT: min = {:1.3f}, max = {:1.3f}, mean = {:1.3f} ".format(torch.min(output).item(), torch.max(output).item(), torch.mean(output).item()))
             print('[' +  '{:5}'.format(i * len(data)) + '/' + '{:5}'.format(total_samples) +
                   ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
                   '{:6.4f}'.format(loss.item()))
@@ -273,12 +262,12 @@ def evaluate(model, data_loader, loss_history):
             # print(res)
             # output = F.log_softmax(res, dim=1)
             # fseq = build_seq(data, target)
-            output = F.log_softmax(model(data, target), dim=1)
+            output = F.log_softmax(model(data, target), dim=0)
             # print(output, true_target)
-            loss = F.nll_loss(output, true_target.unsqueeze(0))
+            loss = F.nll_loss(output, true_target)
             # output = F.log_softmax(model(data), dim=1)
             # loss = F.nll_loss(output, target, reduction='sum')
-            _, pred = torch.max(output, dim=1)
+            _, pred = torch.max(output, dim=0)
             total_loss += loss.item()
             correct_samples += pred.eq(target).sum()
 
@@ -302,10 +291,10 @@ conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
 # conv_model_alt = conv_model_alt.cuda()
 #the extra label represents the class token
 # model = ViTResNet(num_classes=NUM_CLASSES, conv_model=conv_model)
-model = seqTrans(conv_model=conv_model, num_classes=NUM_CLASSES, num_tokens=1).cuda()
+model = seqTrans(conv_model=conv_model, num_classes=NUM_CLASSES, num_tokens=4).cuda()
 #  print("Model summary: ")
 # print(summary(model, (1088)))
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.001)
+optimizer = torch.optim.AdamW(model.parameters(), lr=0.0003)
 #lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[5,10],gamma = 0.1)
 
 train_loss_history, test_loss_history = [], []

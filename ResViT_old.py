@@ -148,10 +148,16 @@ class ViTResNet(nn.Module):
         x = conv_model(img)
         x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
         x += self.pos_embedding
+        print("after pos embed: ")
+        print(x.size()) 
         x = self.dropout(x)
         x = self.transformer(x, mask) #main game
+        print("after Transformer: ")
+        print(x.size()) 
         # x = self.transformer(x)
-        x = self.to_cls_token(x[:, 0]) #why do we throw information away after the transformer layer?   
+        x = self.to_cls_token(x[:, 0]) #why do we throw information away after the transformer layer?  
+        print("after CLS token: ")
+        print(x.size()) 
         x = self.nn1(x)
         return x
 
