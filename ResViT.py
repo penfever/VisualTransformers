@@ -1,9 +1,7 @@
 import PIL
-from copy import deepcopy
 import time
 import timm
 import torch
-from torchsummary import summary
 import torchvision
 import torch.nn.functional as F
 from einops import rearrange
@@ -115,20 +113,21 @@ class Transformer(nn.Module):
         return x
 
 def build_seq(image_vec, label_vec):
-    embed_full = image_vec[0, :, :].unsqueeze(0)
-    # print("embed full size: ")
-    # print(embed_full.size())
-    # print(label_vec.size())
-    embed_full = torch.cat((embed_full, label_vec[0].unsqueeze(0)))
-    # print("after stacK: ")
+    embed_full = image_vec[0]
+    # print(label_vec[0].size())
+    embed_full = torch.stack((embed_full, label_vec[0]))
     # print(embed_full.size())
     for i in range(1, len(image_vec)):
+        # print(embed_full.size())
         embed_full = torch.cat((embed_full, image_vec[i].unsqueeze(0)))
-        # if i != len(data) - 1:
         embed_full = torch.cat((embed_full, label_vec[i].unsqueeze(0)))
-        # else:
-        #     embed_full = torch.cat((embed_full, CLS_TOKEN.unsqueeze(0)))
     return embed_full
+    # embed_full = image_vec[0, :, :].unsqueeze(0)
+    # embed_full = torch.cat((embed_full, label_vec[0].unsqueeze(0)))
+    # for i in range(1, len(image_vec)):
+    #     embed_full = torch.cat((embed_full, image_vec[i].unsqueeze(0)))
+    #     embed_full = torch.cat((embed_full, label_vec[i].unsqueeze(0)))
+    # return embed_full
 
 class seqTrans(nn.Module):
     def __init__(self, conv_model, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
@@ -136,50 +135,37 @@ class seqTrans(nn.Module):
         self.dim = dim
         self.conv_model = conv_model
         self.in_planes = 64 #controls how many channels the model expects
-        self.label_embed = torch.nn.Embedding(len(labels), dim * self.in_planes)
+        self.label_embed = torch.nn.Embedding(num_classes, dim)
         self.num_classes = num_classes
         self.apply(_weights_init)
         
-        self.pos_embedding = nn.Parameter(torch.empty(num_tokens, dim, self.in_planes))        
+        self.pos_embedding = nn.Parameter(torch.empty(num_tokens * 2, dim))        
         torch.nn.init.normal_(self.pos_embedding, std = .02) # Initialize to normal distribution. Based on the paper
         self.dropout = nn.Dropout(emb_dropout)
 
-        # self.transformer = nn.Transformer(d_model=dim, activation="gelu")
-        self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
-
+        # self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
+        self.transformer = torch.nn.Transformer(d_model=dim)
         self.to_cls_token = nn.Identity()  #TODO: consider using linear, tanh for this a la BERT
-        self.nn1 = nn.Linear(dim * num_tokens * 2, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
+        self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
         torch.nn.init.xavier_uniform_(self.nn1.weight)
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
     def forward(self, seq_x, seq_y, mask = None):
         x = conv_model(seq_x)
-        # print(x.size())
-        x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
-        x += self.pos_embedding
-        # print(x.size())
+        # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
+        # print(x.size(), self.pos_embedding.size())
         if len(x[0]) > 1:
             seq_y[-1] = self.num_classes-1 #CLS_TOKEN
-            # print("len seq y: ")
-            # print(len(seq_y))
             y = self.label_embed(seq_y)
-            y = y.view(len(seq_y), self.dim, self.in_planes)
-            # print("label embed size: ")
-            #print(y.size())
+            # y = y.view(len(seq_y), self.dim, self.in_planes)
             x = build_seq(x, y)
-        # print("after seq build: ")
         # print(x.size())
-        # x = self.conv_model(seq_x) + self.pos_embedding
+        x += self.pos_embedding
         x = self.dropout(x)
-        # x = x.unsqueeze(0)
-        x = self.transformer(x, mask)
-        # print("after transformer: ")
+        x = self.transformer(x, x)
         # print(x.size())
-        # x = self.transformer(x, x) #main game
-        x = self.to_cls_token(x[:, 0])
-        x = x.flatten()
-        # print("after CLS token: ")
-        # print(x.size())
+        x = self.to_cls_token(x[-1, :])
+        # x = x.flatten()
         x = self.nn1(x)
         return x
 
@@ -187,7 +173,7 @@ BATCH_SIZE_TRAIN = 4
 BATCH_SIZE_TEST = 4
 
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
-SUBSET_SIZE = 100
+SUBSET_SIZE = 500
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
@@ -223,15 +209,9 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
           continue
         data = data.cuda()
         target = target.cuda()
-        # seq = data
         true_target = target[-1].clone()
-        # fseq = build_seq(data, target)
         optimizer.zero_grad()
-        # res = conv_model_alt(data)
-        # print(res)
-        # output = F.log_softmax(res, dim=1)
         output = F.log_softmax(model(data, target), dim=0)
-        # print(output.size(), true_target.unsqueeze(0).size())
         loss = F.nll_loss(output, true_target)
         loss.backward()
         optimizer.step()
@@ -258,15 +238,8 @@ def evaluate(model, data_loader, loss_history):
             if len(target) < BATCH_SIZE_TRAIN:
               continue
             true_target = target[-1].clone()
-            # res = conv_model_alt(data)
-            # print(res)
-            # output = F.log_softmax(res, dim=1)
-            # fseq = build_seq(data, target)
             output = F.log_softmax(model(data, target), dim=0)
-            # print(output, true_target)
             loss = F.nll_loss(output, true_target)
-            # output = F.log_softmax(model(data), dim=1)
-            # loss = F.nll_loss(output, target, reduction='sum')
             _, pred = torch.max(output, dim=0)
             total_loss += loss.item()
             correct_samples += pred.eq(target).sum()
@@ -281,21 +254,17 @@ def evaluate(model, data_loader, loss_history):
 N_EPOCHS = 10
 N_TOKENS = 64
 
-conv_model = timm.create_model('resnet50', pretrained=True)
-conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
-new_out = torch.nn.Conv2d(1024, N_TOKENS, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
-conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
+# conv_model = timm.create_model('resnet50', pretrained=True)
+# conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
+# new_out = torch.nn.Conv2d(1024, N_TOKENS, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
+# conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
 
-# conv_model_alt = timm.create_model('resnet50', pretrained=True)
-# conv_model_alt.fc = torch.nn.Linear(2048, 64)
-# conv_model_alt = conv_model_alt.cuda()
-#the extra label represents the class token
-# model = ViTResNet(num_classes=NUM_CLASSES, conv_model=conv_model)
+conv_model = timm.create_model('resnet50', pretrained=True)
+conv_model.fc = torch.nn.Linear(2048, 64)
+
 model = seqTrans(conv_model=conv_model, num_classes=NUM_CLASSES, num_tokens=4).cuda()
-#  print("Model summary: ")
-# print(summary(model, (1088)))
+
 optimizer = torch.optim.AdamW(model.parameters(), lr=0.0003)
-#lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[5,10],gamma = 0.1)
 
 train_loss_history, test_loss_history = [], []
 for epoch in range(1, N_EPOCHS + 1):
