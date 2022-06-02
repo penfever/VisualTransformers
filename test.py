@@ -32,4 +32,6 @@ if __name__ == '__main__':
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BS,
                                             shuffle=False)
     labels = torch.unique(torch.tensor(omniglot.targets))
-    print(labels, len(labels))
+    label_embed = torch.nn.Embedding(len(labels), 64)
+    print(label_embed(labels[12:24]))
+    # print(labels, len(labels))
