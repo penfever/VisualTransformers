@@ -153,7 +153,7 @@ class seqTrans(nn.Module):
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
     def forward(self, seq_x, seq_y, mask = None):
-        x = conv_model(seq_x)
+        x = conv_model(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105))
         print(x.size())
         x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
         print(x.size(), self.pos_embedding.size())
