@@ -144,7 +144,9 @@ class seqTrans(nn.Module):
         self.dropout = nn.Dropout(emb_dropout)
 
         # self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
-        self.transformer = torch.nn.Transformer(d_model=dim)
+        # self.transformer = torch.nn.Transformer(d_model=dim)
+        decoder_layer = nn.TransformerDecoderLayer(d_model=dim, nhead=heads)
+        self.transformer = nn.TransformerDecoder(decoder_layer, num_layers=depth)
         self.to_cls_token = nn.Identity()  #TODO: consider using linear, tanh for this a la BERT
         self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
         torch.nn.init.xavier_uniform_(self.nn1.weight)
@@ -152,28 +154,34 @@ class seqTrans(nn.Module):
         
     def forward(self, seq_x, seq_y, mask = None):
         x = conv_model(seq_x)
-        # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
-        # print(x.size(), self.pos_embedding.size())
+        print(x.size())
+        x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
+        print(x.size(), self.pos_embedding.size())
         if len(x[0]) > 1:
             seq_y[-1] = self.num_classes-1 #CLS_TOKEN
             y = self.label_embed(seq_y)
             # y = y.view(len(seq_y), self.dim, self.in_planes)
             x = build_seq(x, y)
-        # print(x.size())
+        # print(x.size(), self.pos_embedding.size())
         x += self.pos_embedding
         x = self.dropout(x)
-        x = self.transformer(x, x)
+        # mask = torch.ones_like(torch.tensor([len(x),len(x)])).bool()
+        tgt = torch.rand_like(x)
+        tgt = self.transformer(tgt, x)
         # print(x.size())
-        x = self.to_cls_token(x[-1, :])
+        tgt = self.to_cls_token(tgt[-1, :])
         # x = x.flatten()
+        x = self.nn1(tgt)
         x = self.nn1(x)
         return x
 
-BATCH_SIZE_TRAIN = 4
-BATCH_SIZE_TEST = 4
-
+BATCH_SIZE_TRAIN = 32
+BATCH_SIZE_TEST = 32
+N_EPOCHS = 10
+N_TOKENS = 8
+LR = 0.0006
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
-SUBSET_SIZE = 500
+SUBSET_SIZE = 100
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
@@ -208,10 +216,18 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         if len(target) < BATCH_SIZE_TRAIN:
           continue
         data = data.cuda()
+        # print(data.size())
+        data = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
         target = target.cuda()
-        true_target = target[-1].clone()
-        optimizer.zero_grad()
-        output = F.log_softmax(model(data, target), dim=0)
+        target = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
+        final_idx = [N_TOKENS-1 for i in range(BATCH_SIZE_TRAIN//N_TOKENS)]
+        # print(final_idx)
+        ids = torch.Tensor(final_idx).long().cuda()
+        # print(target, ids)
+        true_target = target.gather(1, ids.view(-1,1)).clone()
+        # print(target, true_target)
+        output = F.log_softmax(model(data, target), dim=1)
+        # output = F.log_softmax(model(data), dim=1)
         loss = F.nll_loss(output, true_target)
         loss.backward()
         optimizer.step()
@@ -237,10 +253,11 @@ def evaluate(model, data_loader, loss_history):
             # seq = data
             if len(target) < BATCH_SIZE_TRAIN:
               continue
-            true_target = target[-1].clone()
-            output = F.log_softmax(model(data, target), dim=0)
-            loss = F.nll_loss(output, true_target)
-            _, pred = torch.max(output, dim=0)
+            # true_target = target[-1].clone().unsqueeze(0)
+            output = F.log_softmax(model(data, target), dim=1)
+            # output = F.log_softmax(model(data), dim=1)
+            loss = F.nll_loss(output, target)
+            _, pred = torch.max(output, dim=1)
             total_loss += loss.item()
             correct_samples += pred.eq(target).sum()
 
@@ -251,9 +268,6 @@ def evaluate(model, data_loader, loss_history):
           '{:5}'.format(total_samples) + ' (' +
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n')
 
-N_EPOCHS = 10
-N_TOKENS = 64
-
 # conv_model = timm.create_model('resnet50', pretrained=True)
 # conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
 # new_out = torch.nn.Conv2d(1024, N_TOKENS, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
@@ -262,9 +276,14 @@ N_TOKENS = 64
 conv_model = timm.create_model('resnet50', pretrained=True)
 conv_model.fc = torch.nn.Linear(2048, 64)
 
-model = seqTrans(conv_model=conv_model, num_classes=NUM_CLASSES, num_tokens=4).cuda()
+conv_model_direct = timm.create_model('resnet50', pretrained=True)
+conv_model_direct.fc = torch.nn.Linear(2048, NUM_CLASSES)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=0.0003)
+model = seqTrans(conv_model=conv_model, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).cuda()
+# model = conv_model_direct.cuda()
+
+optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+# optimizer = torch.optim.SGD(model.parameters(), lr=LR, momentum=.9)
 
 train_loss_history, test_loss_history = [], []
 for epoch in range(1, N_EPOCHS + 1):
