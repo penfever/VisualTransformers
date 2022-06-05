@@ -133,13 +133,15 @@ class seqTrans(nn.Module):
     def __init__(self, conv_model, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
         super(seqTrans, self).__init__()
         self.dim = dim
+        self.num_tokens = num_tokens
+        self.n_seq = BATCH_SIZE_TRAIN // self.num_tokens
         self.conv_model = conv_model
         self.in_planes = 64 #controls how many channels the model expects
         self.label_embed = torch.nn.Embedding(num_classes, dim)
         self.num_classes = num_classes
         self.apply(_weights_init)
         
-        self.pos_embedding = nn.Parameter(torch.empty(num_tokens * 2, dim))        
+        self.pos_embedding = nn.Parameter(torch.empty(BATCH_SIZE_TRAIN // self.num_tokens, num_tokens * 2, dim))        
         torch.nn.init.normal_(self.pos_embedding, std = .02) # Initialize to normal distribution. Based on the paper
         self.dropout = nn.Dropout(emb_dropout)
 
@@ -154,25 +156,32 @@ class seqTrans(nn.Module):
         
     def forward(self, seq_x, seq_y, mask = None):
         x = conv_model(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105))
-        print(x.size())
-        x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
-        print(x.size(), self.pos_embedding.size())
+        # print(x.size())
+        # x = x.()
+        # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
+        # print(x.size(), self.pos_embedding.size())
         if len(x[0]) > 1:
-            seq_y[-1] = self.num_classes-1 #CLS_TOKEN
+            idx = [self.num_tokens * i + self.num_tokens - 1 for i in range(self.n_seq)]
+            seq_y = seq_y.reshape(BATCH_SIZE_TRAIN)
+            seq_y[idx] = self.num_classes-1 #CLS_TOKEN
+            # print(seq_y)
             y = self.label_embed(seq_y)
+            print(y.size(), x.size())
             # y = y.view(len(seq_y), self.dim, self.in_planes)
             x = build_seq(x, y)
-        # print(x.size(), self.pos_embedding.size())
+            x = x.reshape(self.n_seq, self.num_tokens * 2, self.dim)
+        print(x.size(), self.pos_embedding.size())
         x += self.pos_embedding
         x = self.dropout(x)
         # mask = torch.ones_like(torch.tensor([len(x),len(x)])).bool()
         tgt = torch.rand_like(x)
         tgt = self.transformer(tgt, x)
+        # TODO: Fix shapes
         # print(x.size())
-        tgt = self.to_cls_token(tgt[-1, :])
+        tgt = self.to_cls_token(tgt[:, -1, :])
         # x = x.flatten()
         x = self.nn1(tgt)
-        x = self.nn1(x)
+        print(x.size())
         return x
 
 BATCH_SIZE_TRAIN = 32
@@ -197,7 +206,7 @@ DATASET = subset
 labels = torch.unique(torch.tensor(omniglot.targets))
 if DATASET == subset:
     labels = torch.tensor([i for i in range(SUBSET_SIZE)])
-NUM_CLASSES = len(labels)
+NUM_CLASSES = len(labels)+1 #add 1 for CLS token
 print("num classes is {}".format(NUM_CLASSES))
 train_set_size = int(len(DATASET) * 0.7)
 valid_set_size = len(DATASET) - train_set_size
