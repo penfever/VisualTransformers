@@ -155,37 +155,37 @@ class seqTrans(nn.Module):
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
     def forward(self, seq_x, seq_y, mask = None):
-        x = conv_model(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105))
+        # x = conv_model(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105))
         # print(x.size())
         # x = x.()
         # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
         # print(x.size(), self.pos_embedding.size())
-        if len(x[0]) > 1:
-            idx = [self.num_tokens * i + self.num_tokens - 1 for i in range(self.n_seq)]
-            seq_y = seq_y.reshape(BATCH_SIZE_TRAIN)
-            seq_y[idx] = self.num_classes-1 #CLS_TOKEN
-            # print(seq_y)
-            y = self.label_embed(seq_y)
-            # print("After label embed: ")
-            # print(y.size(), x.size())
-            # y = y.view(len(seq_y), self.dim, self.in_planes)
-            x = build_seq(x, y)
-            x = x.reshape(self.n_seq, self.num_tokens * 2, self.dim)
-        # print("After sequence reshaping: ")
-        # print(x.size(), self.pos_embedding.size())
-        x += self.pos_embedding
-        x = self.dropout(x)
-        # mask = torch.ones_like(torch.tensor([len(x),len(x)])).bool()
-        tgt = torch.rand_like(x)
-        tgt = self.transformer(tgt, x)
-        # TODO: Fix shapes
-        # print(x.size())
-        tgt = self.to_cls_token(tgt[:, -1, :])
+        # if len(x[0]) > 1:
+        #     idx = [self.num_tokens * i + self.num_tokens - 1 for i in range(self.n_seq)]
+        #     seq_y = seq_y.reshape(BATCH_SIZE_TRAIN)
+        #     seq_y[idx] = self.num_classes-1 #CLS_TOKEN
+        #     # print(seq_y)
+        #     y = self.label_embed(seq_y)
+        #     # print("After label embed: ")
+        #     # print(y.size(), x.size())
+        #     # y = y.view(len(seq_y), self.dim, self.in_planes)
+        #     x = build_seq(x, y)
+        #     x = x.reshape(self.n_seq, self.num_tokens * 2, self.dim)
+        # # print("After sequence reshaping: ")
+        # # print(x.size(), self.pos_embedding.size())
+        # x += self.pos_embedding
+        # x = self.dropout(x)
+        # # mask = torch.ones_like(torch.tensor([len(x),len(x)])).bool()
+        # tgt = torch.rand_like(x)
+        # tgt = self.transformer(tgt, x)
+        # # TODO: Fix shapes
+        # # print(x.size())
+        # tgt = self.to_cls_token(tgt[:, -1, :])
         # x = x.flatten()
-        x = self.nn1(tgt)
+        # x = self.nn1(x)
         # print("After linear layer: ")
         # print(x.size())
-        return x
+        return conv_model(seq_x)
 
 BATCH_SIZE_TRAIN = 32
 BATCH_SIZE_TEST = 32
@@ -228,14 +228,17 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         if len(target) < BATCH_SIZE_TRAIN:
           continue
         data = data.cuda()
-        data = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
         target = target.cuda()
-        target = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
+        data_s = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
+        target_s = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
         final_idx = [N_TOKENS-1 for i in range(BATCH_SIZE_TRAIN//N_TOKENS)]
         ids = torch.Tensor(final_idx).long().cuda()
-        true_target = target.gather(1, ids.view(-1,1)).clone()
+        true_target = target_s.gather(1, ids.view(-1,1)).clone()
+        assert(torch.equal(data[0], data_s[0][0]))
+        assert(torch.equal(data[N_TOKENS], data_s[1][0]))
         output = F.log_softmax(model(data, target), dim=1)
-        loss = F.nll_loss(output, true_target.squeeze(dim=1))
+        # loss = F.nll_loss(output, true_target.squeeze(dim=1))
+        loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
         if scheduler is not None:
@@ -258,17 +261,22 @@ def evaluate(model, data_loader, loss_history):
             if len(target) < BATCH_SIZE_TRAIN:
                 continue
             data = data.cuda()
-            data = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
             target = target.cuda()
-            target = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
+            data_s = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
+            target_s = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
             final_idx = [N_TOKENS-1 for i in range(BATCH_SIZE_TRAIN//N_TOKENS)]
             ids = torch.Tensor(final_idx).long().cuda()
-            true_target = target.gather(1, ids.view(-1,1)).clone()
-            output = F.log_softmax(model(data, target), dim=1)
-            loss = F.nll_loss(output, true_target.squeeze(dim=1))
+            true_target = target_s.gather(1, ids.view(-1,1)).clone()
+            assert(torch.equal(data[0], data_s[0][0]))
+            assert(torch.equal(data[N_TOKENS], data_s[1][0]))
+            # output = F.log_softmax(model(data, target), dim=1)
+            output = F.log_softmax(model(data))
+            # loss = F.nll_loss(output, true_target.squeeze(dim=1))
+            loss = F.nll_loss(output, target)
             _, pred = torch.max(output, dim=1)
             total_loss += loss.item()
-            correct_samples += pred.eq(true_target.squeeze(dim=1)).sum()
+            correct_samples += pred.eq(target).sum()
+            #correct_samples += pred.eq(true_target.squeeze(dim=1)).sum()
 
     avg_loss = total_loss / total_samples
     loss_history.append(avg_loss)
@@ -283,13 +291,13 @@ def evaluate(model, data_loader, loss_history):
 # conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
 
 conv_model = timm.create_model('resnet50', pretrained=True)
-conv_model.fc = torch.nn.Linear(2048, 64)
+conv_model.fc = torch.nn.Linear(2048, NUM_CLASSES)
 
 conv_model_direct = timm.create_model('resnet50', pretrained=True)
 conv_model_direct.fc = torch.nn.Linear(2048, NUM_CLASSES)
 
-model = seqTrans(conv_model=conv_model, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).cuda()
-# model = conv_model_direct.cuda()
+# model = seqTrans(conv_model=conv_model, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).cuda()
+model = conv_model_direct.cuda()
 
 optimizer = torch.optim.Adam(model.parameters(), lr=LR)
 # optimizer = torch.optim.SGD(model.parameters(), lr=LR, momentum=.9)
