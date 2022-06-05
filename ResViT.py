@@ -166,11 +166,13 @@ class seqTrans(nn.Module):
             seq_y[idx] = self.num_classes-1 #CLS_TOKEN
             # print(seq_y)
             y = self.label_embed(seq_y)
-            print(y.size(), x.size())
+            # print("After label embed: ")
+            # print(y.size(), x.size())
             # y = y.view(len(seq_y), self.dim, self.in_planes)
             x = build_seq(x, y)
             x = x.reshape(self.n_seq, self.num_tokens * 2, self.dim)
-        print(x.size(), self.pos_embedding.size())
+        # print("After sequence reshaping: ")
+        # print(x.size(), self.pos_embedding.size())
         x += self.pos_embedding
         x = self.dropout(x)
         # mask = torch.ones_like(torch.tensor([len(x),len(x)])).bool()
@@ -181,7 +183,8 @@ class seqTrans(nn.Module):
         tgt = self.to_cls_token(tgt[:, -1, :])
         # x = x.flatten()
         x = self.nn1(tgt)
-        print(x.size())
+        # print("After linear layer: ")
+        # print(x.size())
         return x
 
 BATCH_SIZE_TRAIN = 32
@@ -225,24 +228,19 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         if len(target) < BATCH_SIZE_TRAIN:
           continue
         data = data.cuda()
-        # print(data.size())
         data = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
         target = target.cuda()
         target = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
         final_idx = [N_TOKENS-1 for i in range(BATCH_SIZE_TRAIN//N_TOKENS)]
-        # print(final_idx)
         ids = torch.Tensor(final_idx).long().cuda()
-        # print(target, ids)
         true_target = target.gather(1, ids.view(-1,1)).clone()
-        # print(target, true_target)
         output = F.log_softmax(model(data, target), dim=1)
-        # output = F.log_softmax(model(data), dim=1)
-        loss = F.nll_loss(output, true_target)
+        loss = F.nll_loss(output, true_target.squeeze(dim=1))
         loss.backward()
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
-        if i % 100 == 0:
+        if i % 10 == 0:
             print("LOGSOFT: min = {:1.3f}, max = {:1.3f}, mean = {:1.3f} ".format(torch.min(output).item(), torch.max(output).item(), torch.mean(output).item()))
             print('[' +  '{:5}'.format(i * len(data)) + '/' + '{:5}'.format(total_samples) +
                   ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
@@ -257,18 +255,20 @@ def evaluate(model, data_loader, loss_history):
 
     with torch.no_grad():
         for data, target in data_loader:
-            data = data.cuda()
-            target = target.cuda()
-            # seq = data
             if len(target) < BATCH_SIZE_TRAIN:
-              continue
-            # true_target = target[-1].clone().unsqueeze(0)
+                continue
+            data = data.cuda()
+            data = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
+            target = target.cuda()
+            target = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
+            final_idx = [N_TOKENS-1 for i in range(BATCH_SIZE_TRAIN//N_TOKENS)]
+            ids = torch.Tensor(final_idx).long().cuda()
+            true_target = target.gather(1, ids.view(-1,1)).clone()
             output = F.log_softmax(model(data, target), dim=1)
-            # output = F.log_softmax(model(data), dim=1)
-            loss = F.nll_loss(output, target)
+            loss = F.nll_loss(output, true_target.squeeze(dim=1))
             _, pred = torch.max(output, dim=1)
             total_loss += loss.item()
-            correct_samples += pred.eq(target).sum()
+            correct_samples += pred.eq(true_target.squeeze(dim=1)).sum()
 
     avg_loss = total_loss / total_samples
     loss_history.append(avg_loss)
