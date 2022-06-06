@@ -75,20 +75,11 @@ class PositionalEncoding(nn.Module):
 
 def build_seq(image_vec, label_vec):
     embed_full = image_vec[0]
-    # print(label_vec[0].size())
     embed_full = torch.stack((embed_full, label_vec[0]))
-    # print(embed_full.size())
     for i in range(1, len(image_vec)):
-        # print(embed_full.size())
         embed_full = torch.cat((embed_full, image_vec[i].unsqueeze(0)))
         embed_full = torch.cat((embed_full, label_vec[i].unsqueeze(0)))
     return embed_full
-    # embed_full = image_vec[0, :, :].unsqueeze(0)
-    # embed_full = torch.cat((embed_full, label_vec[0].unsqueeze(0)))
-    # for i in range(1, len(image_vec)):
-    #     embed_full = torch.cat((embed_full, image_vec[i].unsqueeze(0)))
-    #     embed_full = torch.cat((embed_full, label_vec[i].unsqueeze(0)))
-    # return embed_full
 
 class seqTrans(nn.Module):
     def __init__(self, conv_model, label_embedding, all_labels, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
@@ -128,14 +119,6 @@ class seqTrans(nn.Module):
         seq_y[idx] = self.num_classes-1 #CLS_TOKEN
         y = self.label_embed(seq_y) * (self.dim ** -0.5)
         if self.num_tokens > 1:
-            # print(seq_y.size())
-            # print("before relabeling: ")
-            # print(seq_y)
-            # yn = torch.norm(y, p=2, dim=1).detach()
-            # y = y.div(yn.expand_as(y))
-            # print("After label embed: min = {:1.3f}, max = {:1.3f}, mean = {:1.3f} ".format(torch.min(y).item(), torch.max(y).item(), torch.mean(y).item()))
-            # print(y.size(), x.size())
-            # y = y.view(len(seq_y), self.dim, self.in_planes)
             x = build_seq(x, y)
             x = x.reshape(self.n_seq, self.num_tokens * 2, self.dim)
             #TESTS
@@ -146,30 +129,11 @@ class seqTrans(nn.Module):
             # print(x.size())
         else:
             x = x.unsqueeze(dim=1)
-        # print("After sequence reshaping: ")
-        # print(x.size())
         x = self.positional_encoder(x)
-        # x = self.dropout(x)
-        # mask = torch.ones_like(torch.tensor([len(x),len(x)])).bool()
-        # tgt = torch.rand_like(x)
         x = self.transformer(x, mask)
-        # x = self.transformer(x, x)
-        # TODO: Fix shapes
-        # print("before cls: ")
-        # print(x.size())
         x = self.to_cls_token(x[:, -1])
         # Compute the euclidean distance from queries to prototypes
-        # print(x, self.all_labels)
         dists = torch.cdist(x, self.all_labels)
-        # print(dists)
-        # And here is the super complicated operation to transform those distances into classification scores!
-        # scores = -dists
-        # return scores
-        # x = self.to_cls_token(x[:, -1, :])
-        # x = x.flatten()
-        # x = self.nn1(x)
-        # print("After linear layer: ")
-        # print(x.size())
         return dists
 
 BATCH_SIZE_TRAIN = 64
@@ -224,8 +188,6 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         ids = torch.Tensor(final_idx).long().cuda()
         true_target = target.gather(1, ids.view(-1,1)).clone()
         output = F.log_softmax(model(data, target), dim=1)
-        # print(true_target.view(1,-1).size())
-        # loss = F.nll_loss(output, target)
         loss = F.nll_loss(output, true_target.squeeze(dim=1))
         loss.backward()
         optimizer.step()
@@ -252,12 +214,9 @@ def accuracy(output, target, topk=(1,)):
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
         # st()
-        # correct = pred.eq(target.view(1, -1).expand_as(pred))
-        # correct = (pred == target.view(1, -1).expand_as(pred))
         correct = (pred == target.unsqueeze(dim=0)).expand_as(pred)
 
         res = []
-        # correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
         correct_k = correct[:maxk].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(1.0 / batch_size))
         return res
@@ -279,19 +238,12 @@ def evaluate(model, data_loader, loss_history):
             final_idx = [N_TOKENS-1 for i in range(BATCH_SIZE_TRAIN//N_TOKENS)]
             ids = torch.Tensor(final_idx).long().cuda()
             true_target = target.gather(1, ids.view(-1,1)).clone()
-            # print("target == true_target?")
-            # print(torch.equal(target, true_target))
             output = F.log_softmax(model(data, target), dim=1)
-            # print(torch.max(output, dim=1))
             loss = F.nll_loss(output, true_target.squeeze(dim=1), reduction='sum')
-            # loss = F.nll_loss(output, target)
             _, pred = torch.max(output, dim=1)
-            # print(torch.topk(output, 5, dim=1))
-            # print(true_target)
             total_loss += loss.item()
             correct_samples += pred.eq(true_target.squeeze(dim=1)).sum()
             topk_samples.append(accuracy(output, true_target.squeeze(dim=1), 5))
-    # print(total_loss, total_samples)
     avg_loss = total_loss / total_samples
     loss_history.append(avg_loss)
     print('\nAverage test loss: ' + '{:.4f}'.format(avg_loss) + '\n' +
@@ -305,18 +257,13 @@ N_EPOCHS = 30 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for small
 conv_model = timm.create_model('resnet50', pretrained=True)
 conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
 
-# conv_model_direct = timm.create_model('resnet50', pretrained=True)
-# conv_model_direct.fc = torch.nn.Linear(2048, NUM_CLASSES)
-
 label_embed = torch.nn.Embedding(NUM_CLASSES, MODEL_DIM).cuda()
 num_tensor = torch.tensor([i for i in range(NUM_CLASSES)]).cuda().detach()
 all_labels = label_embed(num_tensor).cuda().detach()
 
 model = seqTrans(conv_model=conv_model, label_embedding = label_embed, all_labels = all_labels, dim=MODEL_DIM, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).cuda()
-# model = conv_model_direct.cuda()
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
-# optimizer = torch.optim.SGD(model.parameters(), lr=LR, momentum=.9)
 
 train_loss_history, test_loss_history = [], []
 for epoch in range(1, N_EPOCHS + 1):
