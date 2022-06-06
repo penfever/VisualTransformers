@@ -94,8 +94,6 @@ class ViTResNet(nn.Module):
         self.positional_encoder = PositionalEncoding(
             dim_model=dim, dropout_p=dropout, max_len=5000
         )
-        self.pos_embedding = nn.Parameter(torch.empty(1, (num_tokens), dim))        
-        torch.nn.init.normal_(self.pos_embedding, std = .02) # Initialize to normal distribution. Based on the paper
         self.dropout = nn.Dropout(emb_dropout)
         # self.transformer = nn.Transformer(d_model=dim, batch_first=True, norm_first=True)
         # self.transformer_layer = nn.TransformerDecoderLayer(d_model=dim, nhead=heads)
@@ -109,7 +107,9 @@ class ViTResNet(nn.Module):
         
     def forward(self, img, mask = None):
         x = conv_model(img)
-        x = rearrange(x, 'b c h w -> b c (h w)')
+        x = x.unsqueeze(dim=1)
+        # print(x.size())
+        #x = rearrange(x, 'b c h w -> b c (h w)')
         x = self.positional_encoder(x)
         x = self.c_transformer(x, mask) #main game
         x = self.to_cls_token(x[:, 0]) 
@@ -121,6 +121,8 @@ N_EPOCHS = 10
 N_TOKENS = 8
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
+MODEL_DIM = 512
+
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
@@ -202,10 +204,11 @@ def evaluate(model, data_loader, loss_history):
 N_EPOCHS = 10 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for smaller subsets
 
 conv_model = timm.create_model('resnet50', pretrained=True)
-conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
-new_out = torch.nn.Conv2d(1024, 64, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
-conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
-model = ViTResNet(conv_model=conv_model, num_classes=NUM_CLASSES).cuda()
+conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
+# conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
+# new_out = torch.nn.Conv2d(1024, 64, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
+# conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
+model = ViTResNet(conv_model=conv_model, dim=MODEL_DIM, num_classes=NUM_CLASSES).cuda()
 # print("Model summary: ")
 # print(summary(model, (3, 105, 105)))
 optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
