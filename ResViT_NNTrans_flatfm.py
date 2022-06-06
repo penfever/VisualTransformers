@@ -159,6 +159,7 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         output = F.log_softmax(model(data), dim=1)
         # print(output.size(), target.size())
         loss = F.nll_loss(output, target)
+        # print(loss)
         loss.backward()
         optimizer.step()
         if scheduler is not None:
@@ -184,10 +185,10 @@ def evaluate(model, data_loader, loss_history):
             output = F.log_softmax(model(data), dim=1)
             loss = F.nll_loss(output, target, reduction='sum')
             _, pred = torch.max(output, dim=1)
-            
+            print(loss)
             total_loss += loss.item()
             correct_samples += pred.eq(target).sum()
-
+    print(total_loss, total_samples)
     avg_loss = total_loss / total_samples
     loss_history.append(avg_loss)
     print('\nAverage test loss: ' + '{:.4f}'.format(avg_loss) +

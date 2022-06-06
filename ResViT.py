@@ -115,6 +115,7 @@ class seqTrans(nn.Module):
     def forward(self, seq_x, seq_y, mask = None):
         # print(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105).size())
         x = conv_model(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105))
+        # print("after conv")
         # print(x.size())
         # x = x.()
         # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
@@ -134,7 +135,7 @@ class seqTrans(nn.Module):
         else:
             x = x.unsqueeze(dim=1)
         # print("After sequence reshaping: ")
-        # print(x.size(), self.pos_embedding.size())
+        # print(x.size())
         x = self.positional_encoder(x)
         # x = self.dropout(x)
         # mask = torch.ones_like(torch.tensor([len(x),len(x)])).bool()
@@ -142,8 +143,9 @@ class seqTrans(nn.Module):
         x = self.transformer(x, mask)
         # x = self.transformer(x, x)
         # TODO: Fix shapes
+        # print("before cls: ")
         # print(x.size())
-        x = self.to_cls_token(x[:, 0]) 
+        x = self.to_cls_token(x[:, -1]) 
         # x = self.to_cls_token(x[:, -1, :])
         # x = x.flatten()
         x = self.nn1(x)
@@ -216,13 +218,37 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
                   ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
                   '{:6.4f}'.format(loss.item()))
             loss_history.append(loss.item())
-            
+
+def accuracy(output, target, topk=(1,)):
+    """
+    Computes the accuracy over the k top predictions for the specified values of k
+    In top-5 accuracy you give yourself credit for having the right answer
+    if the right answer appears in your top five guesses.
+    """
+    with torch.no_grad():
+        maxk = topk
+        batch_size = target.size(0)
+
+        # st()
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        # st()
+        # correct = pred.eq(target.view(1, -1).expand_as(pred))
+        # correct = (pred == target.view(1, -1).expand_as(pred))
+        correct = (pred == target.unsqueeze(dim=0)).expand_as(pred)
+
+        res = []
+        # correct_k = correct[:k].view(-1).float().sum(0, keepdim=True)
+        correct_k = correct[:maxk].reshape(-1).float().sum(0, keepdim=True)
+        res.append(correct_k.mul_(1.0 / batch_size))
+        return res
+
 def evaluate(model, data_loader, loss_history):
     model.eval()    
-    total_samples = len(data_loader.dataset)
-    correct_samples = 0
+    total_samples = valid_set_size
+    topk_samples = []
     total_loss = 0
-
+    correct_samples = 0
     with torch.no_grad():
         for data, target in data_loader:
             if len(target) < BATCH_SIZE_TRAIN:
@@ -237,20 +263,25 @@ def evaluate(model, data_loader, loss_history):
             # print("target == true_target?")
             # print(torch.equal(target, true_target))
             output = F.log_softmax(model(data, target), dim=1)
-            loss = F.nll_loss(output, true_target.squeeze(dim=1))
+            # print(torch.max(output, dim=1))
+            loss = F.nll_loss(output, true_target.squeeze(dim=1), reduction='sum')
             # loss = F.nll_loss(output, target)
             _, pred = torch.max(output, dim=1)
+            # print(torch.topk(output, 5, dim=1))
+            # print(true_target)
             total_loss += loss.item()
             correct_samples += pred.eq(true_target.squeeze(dim=1)).sum()
-
+            topk_samples.append(accuracy(output, true_target.squeeze(dim=1), 5))
+    # print(total_loss, total_samples)
     avg_loss = total_loss / total_samples
     loss_history.append(avg_loss)
-    print('\nAverage test loss: ' + '{:.4f}'.format(avg_loss) +
+    print('\nAverage test loss: ' + '{:.4f}'.format(avg_loss) + '\n' +
           '  Accuracy:' + '{:5}'.format(correct_samples) + '/' +
           '{:5}'.format(total_samples) + ' (' +
-          '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n')
+          '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n' +
+          'Top 5 Accuracy: ' + '{:.2f}%\n'.format(100 * torch.mean(torch.tensor(topk_samples))))
 
-N_EPOCHS = 10 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for smaller subsets
+N_EPOCHS = 30 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for smaller subsets
 
 conv_model = timm.create_model('resnet50', pretrained=True)
 conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
