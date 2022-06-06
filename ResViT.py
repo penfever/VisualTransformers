@@ -112,7 +112,6 @@ class seqTrans(nn.Module):
         # print("after conv")
         # print(x.size())
         # x = x.()
-        # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
         # print(x.size(), self.pos_embedding.size())
         idx = [self.num_tokens * i + self.num_tokens - 1 for i in range(self.n_seq)]
         seq_y = seq_y.reshape(BATCH_SIZE_TRAIN)
@@ -120,7 +119,10 @@ class seqTrans(nn.Module):
         y = self.label_embed(seq_y) * (self.dim ** -0.5)
         if self.num_tokens > 1:
             x = build_seq(x, y)
+            # print(x.size())
+            # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
             x = x.reshape(self.n_seq, self.num_tokens * 2, self.dim)
+            # print(x.size())
             #TESTS
             assert(torch.equal(x[0, 0, :], dup_x[0, :]))
             assert(torch.equal(x[0, 2, :], dup_x[1, :]))
@@ -136,12 +138,12 @@ class seqTrans(nn.Module):
         dists = torch.cdist(x, self.all_labels)
         return dists
 
-BATCH_SIZE_TRAIN = 64
-BATCH_SIZE_TEST = 64
-N_TOKENS = 1
+BATCH_SIZE_TRAIN = 128
+BATCH_SIZE_TEST = 128
+N_TOKENS = 4
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
-MODEL_DIM = 512
+MODEL_DIM = 128
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
@@ -172,7 +174,7 @@ test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TE
                                          shuffle=False)
 
 def train(model, optimizer, data_loader, loss_history, scheduler=None):
-    total_samples = len(data_loader.dataset)
+    total_samples = len(data_loader.dataset)//N_TOKENS
     model.train()
     for i, (data, target) in enumerate(data_loader):
         optimizer.zero_grad()
@@ -223,7 +225,7 @@ def accuracy(output, target, topk=(1,)):
 
 def evaluate(model, data_loader, loss_history):
     model.eval()    
-    total_samples = valid_set_size
+    total_samples = len(data_loader.dataset)//N_TOKENS
     topk_samples = []
     total_loss = 0
     correct_samples = 0
@@ -252,7 +254,7 @@ def evaluate(model, data_loader, loss_history):
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n' +
           'Top 5 Accuracy: ' + '{:.2f}%\n'.format(100 * torch.mean(torch.tensor(topk_samples))))
 
-N_EPOCHS = 30 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for smaller subsets
+N_EPOCHS = 100 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for smaller subsets
 
 conv_model = timm.create_model('resnet50', pretrained=True)
 conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
