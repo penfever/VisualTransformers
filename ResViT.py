@@ -174,7 +174,7 @@ class seqTrans(nn.Module):
 
 BATCH_SIZE_TRAIN = 64
 BATCH_SIZE_TEST = 64
-N_TOKENS = 2
+N_TOKENS = 1
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
 MODEL_DIM = 512
