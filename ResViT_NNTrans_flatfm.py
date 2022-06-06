@@ -1,14 +1,8 @@
 
-# -*- coding: utf-8 -*-
-"""
-Created on Fri Oct 16 11:37:52 2020
-@author: mthossain
-"""
 import PIL
 import time
 import timm
 import torch
-from torchsummary import summary
 import torchvision
 import torch.nn.functional as F
 from einops import rearrange
@@ -80,15 +74,13 @@ class PositionalEncoding(nn.Module):
         # Residual connection + pos encoding
         return self.dropout(token_embedding + self.pos_encoding[:token_embedding.size(0), :])
 
-class ViTResNet(nn.Module):
-    def __init__(self, conv_model=None, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 6, emb_dropout = 0.1, dropout= 0.1):
-        super(ViTResNet, self).__init__()
+class seqTrans(nn.Module):
+    def __init__(self, conv_model, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
+        super(seqTrans, self).__init__()
         self.dim = dim
         self.depth = depth
         self.conv_model = conv_model
         self.in_planes = 64 #controls how many channels the model expects
-        self.L = num_tokens
-        self.cT = dim
         self.num_classes = num_classes
         self.apply(_weights_init)   
         self.positional_encoder = PositionalEncoding(
@@ -98,7 +90,7 @@ class ViTResNet(nn.Module):
         # self.transformer = nn.Transformer(d_model=dim, batch_first=True, norm_first=True)
         # self.transformer_layer = nn.TransformerDecoderLayer(d_model=dim, nhead=heads)
         # self.transformer = nn.TransfomerDecoder(d_model=dim, batch_first=True, norm_first=True)
-        self.c_transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
+        self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
         self.to_cls_token = nn.Identity()
 
         self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
@@ -106,12 +98,14 @@ class ViTResNet(nn.Module):
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
     def forward(self, img, mask = None):
+        # print(img.size())
         x = conv_model(img)
         x = x.unsqueeze(dim=1)
         # print(x.size())
         #x = rearrange(x, 'b c h w -> b c (h w)')
         x = self.positional_encoder(x)
-        x = self.c_transformer(x, mask) #main game
+        x = self.transformer(x, mask)
+        # print(x.size())
         x = self.to_cls_token(x[:, 0]) 
         x = self.nn1(x)
         return x
@@ -121,7 +115,7 @@ N_EPOCHS = 10
 N_TOKENS = 8
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
-MODEL_DIM = 512
+MODEL_DIM = 128
 
 transform = torchvision.transforms.Compose(
      [
@@ -162,14 +156,14 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         data = data.cuda()
         target = target.cuda()
         optimizer.zero_grad()
-        # print(data.size(), target.size())
         output = F.log_softmax(model(data), dim=1)
+        # print(output.size(), target.size())
         loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
-        if i % 100 == 0:
+        if i % 10 == 0:
             print('[' +  '{:5}'.format(i * len(data)) + '/' + '{:5}'.format(total_samples) +
                   ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
                   '{:6.4f}'.format(loss.item()))
@@ -208,7 +202,7 @@ conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
 # conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
 # new_out = torch.nn.Conv2d(1024, 64, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
 # conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
-model = ViTResNet(conv_model=conv_model, dim=MODEL_DIM, num_classes=NUM_CLASSES).cuda()
+model = seqTrans(conv_model=conv_model, dim=MODEL_DIM, num_classes=NUM_CLASSES).cuda()
 # print("Model summary: ")
 # print(summary(model, (3, 105, 105)))
 optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
