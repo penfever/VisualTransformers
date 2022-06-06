@@ -91,21 +91,21 @@ def build_seq(image_vec, label_vec):
     # return embed_full
 
 class seqTrans(nn.Module):
-    def __init__(self, conv_model, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
+    def __init__(self, conv_model, label_embedding, all_labels, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
         super(seqTrans, self).__init__()
         self.dim = dim
+        self.label_embed = label_embedding
+        self.all_labels = all_labels
         self.num_tokens = num_tokens
         self.n_seq = BATCH_SIZE_TRAIN // self.num_tokens
         self.conv_model = conv_model
         self.in_planes = 64 #controls how many channels the model expects
-        self.label_embed = torch.nn.Embedding(num_classes, dim)
         self.num_classes = num_classes
         self.apply(_weights_init)
         self.positional_encoder = PositionalEncoding(
             dim_model=dim, dropout_p=dropout, max_len=5000
         )
         self.dropout = nn.Dropout(emb_dropout)
-
         self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
         self.to_cls_token = nn.Identity()  #TODO: consider using linear, tanh for this a la BERT
         self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
@@ -115,23 +115,35 @@ class seqTrans(nn.Module):
     def forward(self, seq_x, seq_y, mask = None):
         # print(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105).size())
         x = conv_model(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105))
+        # xn = torch.norm(x, p=2, dim=1).detach()
+        # x = x.div(xn.expand_as(x))
+        dup_x = x
         # print("after conv")
         # print(x.size())
         # x = x.()
         # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
         # print(x.size(), self.pos_embedding.size())
+        idx = [self.num_tokens * i + self.num_tokens - 1 for i in range(self.n_seq)]
+        seq_y = seq_y.reshape(BATCH_SIZE_TRAIN)
+        seq_y[idx] = self.num_classes-1 #CLS_TOKEN
+        y = self.label_embed(seq_y) * (self.dim ** -0.5)
         if self.num_tokens > 1:
-            idx = [self.num_tokens * i + self.num_tokens - 1 for i in range(self.n_seq)]
-            seq_y = seq_y.reshape(BATCH_SIZE_TRAIN)
-            seq_y[idx] = self.num_classes-1 #CLS_TOKEN
+            # print(seq_y.size())
+            # print("before relabeling: ")
             # print(seq_y)
-            y = self.label_embed(seq_y) * (self.dim ** -0.5)
-            # print("After label embed: ")
+            # yn = torch.norm(y, p=2, dim=1).detach()
+            # y = y.div(yn.expand_as(y))
+            # print("After label embed: min = {:1.3f}, max = {:1.3f}, mean = {:1.3f} ".format(torch.min(y).item(), torch.max(y).item(), torch.mean(y).item()))
             # print(y.size(), x.size())
             # y = y.view(len(seq_y), self.dim, self.in_planes)
             x = build_seq(x, y)
-            # print(x.size())
             x = x.reshape(self.n_seq, self.num_tokens * 2, self.dim)
+            #TESTS
+            assert(torch.equal(x[0, 0, :], dup_x[0, :]))
+            assert(torch.equal(x[0, 2, :], dup_x[1, :]))
+            assert(torch.equal(x[0, 1, :], y[0, :]))
+            assert(torch.equal(x[0, 3, :], y[1, :]))
+            # print(x.size())
         else:
             x = x.unsqueeze(dim=1)
         # print("After sequence reshaping: ")
@@ -145,17 +157,24 @@ class seqTrans(nn.Module):
         # TODO: Fix shapes
         # print("before cls: ")
         # print(x.size())
-        x = self.to_cls_token(x[:, -1]) 
+        x = self.to_cls_token(x[:, -1])
+        # Compute the euclidean distance from queries to prototypes
+        # print(x, self.all_labels)
+        dists = torch.cdist(x, self.all_labels)
+        # print(dists)
+        # And here is the super complicated operation to transform those distances into classification scores!
+        # scores = -dists
+        # return scores
         # x = self.to_cls_token(x[:, -1, :])
         # x = x.flatten()
-        x = self.nn1(x)
+        # x = self.nn1(x)
         # print("After linear layer: ")
         # print(x.size())
-        return x
+        return dists
 
 BATCH_SIZE_TRAIN = 64
 BATCH_SIZE_TEST = 64
-N_TOKENS = 1
+N_TOKENS = 2
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
 MODEL_DIM = 512
@@ -286,10 +305,14 @@ N_EPOCHS = 30 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for small
 conv_model = timm.create_model('resnet50', pretrained=True)
 conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
 
-conv_model_direct = timm.create_model('resnet50', pretrained=True)
-conv_model_direct.fc = torch.nn.Linear(2048, NUM_CLASSES)
+# conv_model_direct = timm.create_model('resnet50', pretrained=True)
+# conv_model_direct.fc = torch.nn.Linear(2048, NUM_CLASSES)
 
-model = seqTrans(conv_model=conv_model, dim=MODEL_DIM, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).cuda()
+label_embed = torch.nn.Embedding(NUM_CLASSES, MODEL_DIM).cuda()
+num_tensor = torch.tensor([i for i in range(NUM_CLASSES)]).cuda().detach()
+all_labels = label_embed(num_tensor).cuda().detach()
+
+model = seqTrans(conv_model=conv_model, label_embedding = label_embed, all_labels = all_labels, dim=MODEL_DIM, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).cuda()
 # model = conv_model_direct.cuda()
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
