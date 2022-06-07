@@ -132,7 +132,7 @@ class seqTrans(nn.Module):
         x = self.nn1(x)
         return x
 
-BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 128
+BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 32
 N_TOKENS = 1
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
@@ -150,7 +150,7 @@ idx = [i for i in range(len(omniglot)) if omniglot.imgs[i][1] < SUBSET_SIZE]
 # build the appropriate subset
 subset = torch.utils.data.Subset(omniglot, idx)
 DATASET = subset
-LR = .0008 if DATASET == subset else .0004
+LR = .001 if DATASET == subset else .0006
 labels = torch.unique(torch.tensor(omniglot.targets))
 NUM_DATASET_CLASSES = len(labels)
 if DATASET == subset:
