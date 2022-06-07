@@ -10,6 +10,7 @@ from torch import nn
 import torch.nn.init as init
 import math
 from torch.nn import MultiheadAttention
+import wandb
 
 def _weights_init(m):
     classname = m.__class__.__name__
@@ -17,9 +18,37 @@ def _weights_init(m):
     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
         init.kaiming_normal_(m.weight)
 
+"""
+NOTE:
+For simple image classification, the transformer appears to degrade performance, at least judging by test set accuracy.
+
+for d in range(self.depth):
+    identity = x
+    x = self.attn(x, x, x)
+    x = self.layer_norm(x[0]) + identity
+    identity = x
+    x = self.nn1(x)
+    x = self.af1(x)
+    x = self.do1(x)
+    x = self.nn2(x)
+    x = self.do2(x)
+    x = self.layer_norm(x) + identity
+
+performs worse than
+
+    identity = x
+    x = self.attn(x, x, x)
+    x = self.layer_norm(x[0]) + identity
+
+performs worse than
+
+    return x
+"""
+
 class Transformer(nn.Module):
     def __init__(self, dim, depth, heads, mlp_dim, dropout):
         super().__init__()
+        self.depth = depth
         self.dim = dim
         self.attn = MultiheadAttention(embed_dim=dim, num_heads = heads, dropout = dropout, batch_first=True)
         self.layer_norm = nn.LayerNorm(dim)
@@ -37,13 +66,6 @@ class Transformer(nn.Module):
         identity = x
         x = self.attn(x, x, x)
         x = self.layer_norm(x[0]) + identity
-        identity = x
-        x = self.nn1(x)
-        x = self.af1(x)
-        x = self.do1(x)
-        x = self.nn2(x)
-        x = self.do2(x)
-        x = self.layer_norm(x) + identity
         return x
 
 class PositionalEncoding(nn.Module):
@@ -110,9 +132,8 @@ class seqTrans(nn.Module):
         x = self.nn1(x)
         return x
 
-BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 64
-N_EPOCHS = 10
-N_TOKENS = 8
+BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 128
+N_TOKENS = 1
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
 MODEL_DIM = 128
@@ -129,7 +150,7 @@ idx = [i for i in range(len(omniglot)) if omniglot.imgs[i][1] < SUBSET_SIZE]
 # build the appropriate subset
 subset = torch.utils.data.Subset(omniglot, idx)
 DATASET = subset
-LR = .001 if DATASET == subset else .0005
+LR = .0008 if DATASET == subset else .0004
 labels = torch.unique(torch.tensor(omniglot.targets))
 NUM_DATASET_CLASSES = len(labels)
 if DATASET == subset:
@@ -146,10 +167,39 @@ train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TEST,
                                          shuffle=False)
 
-def train(model, optimizer, data_loader, loss_history, scheduler=None):
+def train_log(output, loss, epoch, example_ct):
+    # Where the magic happens
+    pass
+
+def accuracy(output, target, topk=(1,)):
+    """
+    Computes the accuracy over the k top predictions for the specified values of k
+    In top-5 accuracy you give yourself credit for having the right answer
+    if the right answer appears in your top five guesses.
+    """
+    with torch.no_grad():
+        wandb.watch(model, criterion, log="all", log_freq=1000)
+
+        maxk = topk
+        batch_size = target.size(0)
+
+        # st()
+        _, pred = output.topk(maxk, 1, True, True)
+        pred = pred.t()
+        # st()
+        correct = (pred == target.unsqueeze(dim=0)).expand_as(pred)
+
+        res = []
+        correct_k = correct[:maxk].reshape(-1).float().sum(0, keepdim=True)
+        res.append(correct_k.mul_(1.0 / batch_size))
+        return res
+
+def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None):
+    # Tell wandb to watch what the model gets up to: gradients, weights, and more!
+    wandb.watch(model, criterion, log="all", log_freq=1000)
+    example_ct = 0  # number of examples seen
     total_samples = len(data_loader.dataset)
     model.train()
-
     for i, (data, target) in enumerate(data_loader):
         if len(target) < BATCH_SIZE_TRAIN:
           continue
@@ -157,25 +207,29 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         target = target.cuda()
         optimizer.zero_grad()
         output = F.log_softmax(model(data), dim=1)
-        # print(output.size(), target.size())
-        loss = F.nll_loss(output, target)
-        # print(loss)
+        loss = criterion(output, target)
+        example_ct += len(data)//N_TOKENS
         loss.backward()
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
         if i % 10 == 0:
+            train_log(output, loss, epoch, example_ct)
+            min_logprob = torch.min(output).item()
+            max_logprob = torch.max(output).item()
+            avg_logprob = torch.mean(output).item()
+            wandb.log({"min_logprob": min_logprob, "max_logprob": max_logprob, "avg_logprob": avg_logprob, "epoch": epoch, "avg_train_loss": loss})
+            print("LOGSOFT: min = {:1.3f}, max = {:1.3f}, mean = {:1.3f} ".format(min_logprob, max_logprob, avg_logprob))
             print('[' +  '{:5}'.format(i * len(data)) + '/' + '{:5}'.format(total_samples) +
-                  ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
-                  '{:6.4f}'.format(loss.item()))
-            loss_history.append(loss.item())
+                ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
+                '{:6.4f}'.format(loss.item()))
             
-def evaluate(model, data_loader, loss_history):
+def evaluate(model, data_loader, loss_history, criterion):
     model.eval()    
     total_samples = len(data_loader.dataset)
-    correct_samples = 0
+    topk_samples = []
     total_loss = 0
-
+    correct_samples = 0
     with torch.no_grad():
         for data, target in data_loader:
             data = data.cuda()
@@ -185,39 +239,52 @@ def evaluate(model, data_loader, loss_history):
             output = F.log_softmax(model(data), dim=1)
             loss = F.nll_loss(output, target, reduction='sum')
             _, pred = torch.max(output, dim=1)
-            print(loss)
             total_loss += loss.item()
             correct_samples += pred.eq(target).sum()
-    print(total_loss, total_samples)
+            topk_samples.append(accuracy(output, target, 5))
     avg_loss = total_loss / total_samples
-    loss_history.append(avg_loss)
-    print('\nAverage test loss: ' + '{:.4f}'.format(avg_loss) +
+    wandb.log({"avg_loss": avg_loss, "top1_test_accuracy": 100.0 * correct_samples / total_samples, "top5_test_accuracy": 100 * torch.mean(torch.tensor(topk_samples))})
+    print('\nAverage test loss: ' + '{:.4f}'.format(avg_loss) + '\n' +
           '  Accuracy:' + '{:5}'.format(correct_samples) + '/' +
           '{:5}'.format(total_samples) + ' (' +
-          '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n')
+          '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n' +
+          'Top 5 Accuracy: ' + '{:.2f}%\n'.format(100 * torch.mean(torch.tensor(topk_samples))))
 
 N_EPOCHS = 10 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for smaller subsets
 
-conv_model = timm.create_model('resnet50', pretrained=True)
-conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
-# conv_model = torch.nn.Sequential(*list(conv_model.children())[:-3])
-# new_out = torch.nn.Conv2d(1024, 64, kernel_size=(2,2), stride=(1,1), padding=(1,1), bias=False)
-# conv_model = torch.nn.Sequential(*list(conv_model.children())).append(new_out)
-model = seqTrans(conv_model=conv_model, dim=MODEL_DIM, num_classes=NUM_CLASSES).cuda()
-# print("Model summary: ")
-# print(summary(model, (3, 105, 105)))
-optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
-#lr_scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer=optimizer, milestones=[5,10],gamma = 0.1)
+config = dict(
+    epochs=N_EPOCHS,
+    classes=NUM_CLASSES,
+    batch_size=BATCH_SIZE_TEST,
+    learning_rate=LR,
+    model_dim=MODEL_DIM,
+    dataset="Omniglot",
+    architecture="RN50-flatRepTransNoSeq")
 
-train_loss_history, test_loss_history = [], []
-for epoch in range(1, N_EPOCHS + 1):
-    print('Epoch:', epoch)
-    start_time = time.time()
-    train(model, optimizer, train_loader, train_loss_history)
-    print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
-    evaluate(model, test_loader, test_loss_history)
+with wandb.init(project="RN50-flatRepTransNoSeq-Omniglot", config=config):
+    conv_model = timm.create_model('resnet50', pretrained=True)
+    conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
+    model = seqTrans(conv_model=conv_model, dim=MODEL_DIM, num_classes=NUM_CLASSES).cuda()
+    criterion = F.nll_loss
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
 
-print('Execution time')
+    train_loss_history, test_loss_history = [], []
+    for epoch in range(1, N_EPOCHS + 1):
+        print('Epoch:', epoch)
+        start_time = time.time()
+        train(model, optimizer, criterion, train_loader, train_loss_history)
+        print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
+        evaluate(model, test_loader, test_loss_history, criterion)
+
+    train_loss_history, test_loss_history = [], []
+    for epoch in range(1, N_EPOCHS + 1):
+        print('Epoch:', epoch)
+        start_time = time.time()
+        train(model, optimizer, train_loader, train_loss_history)
+        print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
+        evaluate(model, test_loader, test_loss_history)
+
+    print('Execution time')
 
 PATH = "./ViTRes.pt" # Use your own path
 torch.save(model.state_dict(), PATH)

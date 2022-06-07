@@ -9,6 +9,7 @@ from torch import nn
 import torch.nn.init as init
 import math
 from torch.nn import MultiheadAttention
+import wandb
 
 def _weights_init(m):
     classname = m.__class__.__name__
@@ -19,6 +20,7 @@ def _weights_init(m):
 class Transformer(nn.Module):
     def __init__(self, dim, depth, heads, mlp_dim, dropout):
         super().__init__()
+        self.depth = depth
         self.dim = dim
         self.attn = MultiheadAttention(embed_dim=dim, num_heads = heads, dropout = dropout, batch_first=True)
         self.layer_norm = nn.LayerNorm(dim)
@@ -33,16 +35,17 @@ class Transformer(nn.Module):
         self.do2 = nn.Dropout(dropout)
 
     def forward(self, x, mask = None):
-        identity = x
-        x = self.attn(x, x, x)
-        x = self.layer_norm(x[0]) + identity
-        identity = x
-        x = self.nn1(x)
-        x = self.af1(x)
-        x = self.do1(x)
-        x = self.nn2(x)
-        x = self.do2(x)
-        x = self.layer_norm(x) + identity
+        for d in range(self.depth):
+            identity = x
+            x = self.attn(x, x, x)
+            x = self.layer_norm(x[0]) + identity
+            identity = x
+            x = self.nn1(x)
+            x = self.af1(x)
+            x = self.do1(x)
+            x = self.nn2(x)
+            x = self.do2(x)
+            x = self.layer_norm(x) + identity
         return x
 
 class PositionalEncoding(nn.Module):
@@ -104,15 +107,8 @@ class seqTrans(nn.Module):
         torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
     def forward(self, seq_x, seq_y, mask = None):
-        # print(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105).size())
         x = conv_model(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105))
-        # xn = torch.norm(x, p=2, dim=1).detach()
-        # x = x.div(xn.expand_as(x))
         dup_x = x
-        # print("after conv")
-        # print(x.size())
-        # x = x.()
-        # print(x.size(), self.pos_embedding.size())
         idx = [self.num_tokens * i + self.num_tokens - 1 for i in range(self.n_seq)]
         seq_y = seq_y.reshape(BATCH_SIZE_TRAIN)
         seq_y[idx] = self.num_classes-1 #CLS_TOKEN
@@ -122,13 +118,11 @@ class seqTrans(nn.Module):
             # print(x.size())
             # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
             x = x.reshape(self.n_seq, self.num_tokens * 2, self.dim)
-            # print(x.size())
             #TESTS
             assert(torch.equal(x[0, 0, :], dup_x[0, :]))
             assert(torch.equal(x[0, 2, :], dup_x[1, :]))
             assert(torch.equal(x[0, 1, :], y[0, :]))
             assert(torch.equal(x[0, 3, :], y[1, :]))
-            # print(x.size())
         else:
             x = x.unsqueeze(dim=1)
         x = self.positional_encoder(x)
@@ -138,18 +132,16 @@ class seqTrans(nn.Module):
         dists = torch.cdist(x, self.all_labels)
         return dists
 
-BATCH_SIZE_TRAIN = 128
-BATCH_SIZE_TEST = 128
-N_TOKENS = 4
+BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 256
+N_TOKENS = 2
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
-MODEL_DIM = 128
+MODEL_DIM = 256
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
      torchvision.transforms.ToTensor(),
      torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-
 
 omniglot = torchvision.datasets.ImageFolder(root=DL_PATH, transform=transform)
 idx = [i for i in range(len(omniglot)) if omniglot.imgs[i][1] < SUBSET_SIZE]
@@ -173,7 +165,10 @@ train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TEST,
                                          shuffle=False)
 
-def train(model, optimizer, data_loader, loss_history, scheduler=None):
+def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None):
+    # Tell wandb to watch what the model gets up to: gradients, weights, and more!
+    wandb.watch(model, criterion, log="all", log_freq=1000)
+    example_ct = 0  # number of examples seen
     total_samples = len(data_loader.dataset)//N_TOKENS
     model.train()
     for i, (data, target) in enumerate(data_loader):
@@ -190,17 +185,25 @@ def train(model, optimizer, data_loader, loss_history, scheduler=None):
         ids = torch.Tensor(final_idx).long().cuda()
         true_target = target.gather(1, ids.view(-1,1)).clone()
         output = F.log_softmax(model(data, target), dim=1)
-        loss = F.nll_loss(output, true_target.squeeze(dim=1))
+        loss = criterion(output, true_target.squeeze(dim=1))
+        example_ct += len(data)//N_TOKENS
         loss.backward()
         optimizer.step()
         if scheduler is not None:
             scheduler.step()
-        if i % 10 == 0:
-            print("LOGSOFT: min = {:1.3f}, max = {:1.3f}, mean = {:1.3f} ".format(torch.min(output).item(), torch.max(output).item(), torch.mean(output).item()))
+        if i % 5 == 0:
             print('[' +  '{:5}'.format(i * len(data)) + '/' + '{:5}'.format(total_samples) +
-                  ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
-                  '{:6.4f}'.format(loss.item()))
-            loss_history.append(loss.item())
+                ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
+                '{:6.4f}'.format(loss.item()))
+        train_log(output, loss, epoch, example_ct)
+
+def train_log(output, loss, epoch, example_ct):
+    # Where the magic happens
+    min_logprob = torch.min(output).item()
+    max_logprob = torch.max(output).item()
+    avg_logprob = torch.mean(output).item()
+    wandb.log({"min_logprob": min_logprob, "max_logprob": max_logprob, "avg_logprob": avg_logprob, "epoch": epoch, "avg_train_loss": loss}, step=example_ct)
+    print("LOGSOFT: min = {:1.3f}, max = {:1.3f}, mean = {:1.3f} ".format(min_logprob, max_logprob, avg_logprob))
 
 def accuracy(output, target, topk=(1,)):
     """
@@ -209,6 +212,8 @@ def accuracy(output, target, topk=(1,)):
     if the right answer appears in your top five guesses.
     """
     with torch.no_grad():
+        wandb.watch(model, criterion, log="all", log_freq=1000)
+
         maxk = topk
         batch_size = target.size(0)
 
@@ -223,7 +228,7 @@ def accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(1.0 / batch_size))
         return res
 
-def evaluate(model, data_loader, loss_history):
+def evaluate(model, data_loader, loss_history, criterion):
     model.eval()    
     total_samples = len(data_loader.dataset)//N_TOKENS
     topk_samples = []
@@ -241,13 +246,13 @@ def evaluate(model, data_loader, loss_history):
             ids = torch.Tensor(final_idx).long().cuda()
             true_target = target.gather(1, ids.view(-1,1)).clone()
             output = F.log_softmax(model(data, target), dim=1)
-            loss = F.nll_loss(output, true_target.squeeze(dim=1), reduction='sum')
+            loss = criterion(output, true_target.squeeze(dim=1), reduction='sum')
             _, pred = torch.max(output, dim=1)
             total_loss += loss.item()
             correct_samples += pred.eq(true_target.squeeze(dim=1)).sum()
             topk_samples.append(accuracy(output, true_target.squeeze(dim=1), 5))
     avg_loss = total_loss / total_samples
-    loss_history.append(avg_loss)
+    wandb.log({"avg_test_loss": avg_loss, "top1_test_accuracy": 100.0 * correct_samples / total_samples, "top5_test_accuracy": 100 * torch.mean(torch.tensor(topk_samples))})
     print('\nAverage test loss: ' + '{:.4f}'.format(avg_loss) + '\n' +
           '  Accuracy:' + '{:5}'.format(correct_samples) + '/' +
           '{:5}'.format(total_samples) + ' (' +
@@ -256,26 +261,37 @@ def evaluate(model, data_loader, loss_history):
 
 N_EPOCHS = 100 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for smaller subsets
 
-conv_model = timm.create_model('resnet50', pretrained=True)
-conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
+config = dict(
+    epochs=N_EPOCHS,
+    classes=NUM_CLASSES,
+    batch_size=BATCH_SIZE_TEST,
+    learning_rate=LR,
+    model_dim=MODEL_DIM,
+    seq_len=N_TOKENS,
+    dataset="Omniglot",
+    architecture="RN50-flatRepTransNoSeq")
 
-label_embed = torch.nn.Embedding(NUM_CLASSES, MODEL_DIM).cuda()
-num_tensor = torch.tensor([i for i in range(NUM_CLASSES)]).cuda().detach()
-all_labels = label_embed(num_tensor).cuda().detach()
+with wandb.init(project="RN50-SeqTrans-Omniglot", config=config):
+    conv_model = timm.create_model('resnet50', pretrained=True)
+    conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
 
-model = seqTrans(conv_model=conv_model, label_embedding = label_embed, all_labels = all_labels, dim=MODEL_DIM, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).cuda()
+    label_embed = torch.nn.Embedding(NUM_CLASSES, MODEL_DIM).cuda()
+    num_tensor = torch.tensor([i for i in range(NUM_CLASSES)]).cuda().detach()
+    all_labels = label_embed(num_tensor).cuda().detach()
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
+    model = seqTrans(conv_model=conv_model, label_embedding = label_embed, all_labels = all_labels, dim=MODEL_DIM, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).cuda()
+    criterion = F.nll_loss
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
 
-train_loss_history, test_loss_history = [], []
-for epoch in range(1, N_EPOCHS + 1):
-    print('Epoch:', epoch)
-    start_time = time.time()
-    train(model, optimizer, train_loader, train_loss_history)
-    print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
-    evaluate(model, test_loader, test_loss_history)
+    train_loss_history, test_loss_history = [], []
+    for epoch in range(1, N_EPOCHS + 1):
+        print('Epoch:', epoch)
+        start_time = time.time()
+        train(model, optimizer, criterion, train_loader, train_loss_history)
+        print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
+        evaluate(model, test_loader, test_loss_history, criterion)
 
-print('Execution time')
+    print('Execution time')
 
 PATH = "./ViTRes.pt" # Use your own path
 torch.save(model.state_dict(), PATH)
