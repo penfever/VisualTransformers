@@ -135,7 +135,7 @@ class seqTrans(nn.Module):
         return dists
 
 BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 200
-N_TOKENS = 2
+N_TOKENS = 4
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
 MODEL_DIM = 256
@@ -264,7 +264,7 @@ def evaluate(model, data_loader, loss_history, criterion):
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n' +
           'Top 5 Accuracy: ' + '{:.2f}%\n'.format(100 * torch.mean(torch.tensor(topk_samples))))
 
-N_EPOCHS = 200
+N_EPOCHS = 1000
 TOTAL_SAMPLES = len(train_dataset)//N_TOKENS
 print(TOTAL_SAMPLES)
 NUM_TRAINING_STEPS = TOTAL_SAMPLES // BATCH_SIZE_TEST * N_EPOCHS

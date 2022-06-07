@@ -135,7 +135,7 @@ class seqTrans(nn.Module):
 BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 32
 N_TOKENS = 1
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
-SUBSET_SIZE = 100
+SUBSET_SIZE = 1000
 MODEL_DIM = 128
 
 transform = torchvision.transforms.Compose(
