@@ -124,14 +124,13 @@ class seqTrans(nn.Module):
         x = self.positional_encoder(x)
         x = self.transformer(x, mask)
         x = self.to_cls_token(x[:, -1])
-        # Compute the euclidean distance from queries to prototypes
         return x
 
 BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 200
 N_TOKENS = 2
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
-MODEL_DIM = 256
+MODEL_DIM = 128
 transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
@@ -164,7 +163,7 @@ test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TE
 
 def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None):
     # Tell wandb to watch what the model gets up to: gradients, weights, and more!
-    wandb.watch(model, criterion, log="all", log_freq=10000)
+    wandb.watch(model, criterion, log="all", log_freq=100000)
     example_ct = 0  # number of examples seen
     total_samples = len(data_loader.dataset)//N_TOKENS
     model.train()
@@ -210,17 +209,11 @@ def accuracy(output, target, topk=(1,)):
     if the right answer appears in your top five guesses.
     """
     with torch.no_grad():
-        wandb.watch(model, criterion, log="all", log_freq=10000)
-
         maxk = topk
         batch_size = target.size(0)
-
-        # st()
         _, pred = output.topk(maxk, 1, True, True)
         pred = pred.t()
-        # st()
         correct = (pred == target.unsqueeze(dim=0)).expand_as(pred)
-
         res = []
         correct_k = correct[:maxk].reshape(-1).float().sum(0, keepdim=True)
         res.append(correct_k.mul_(1.0 / batch_size))
@@ -257,7 +250,7 @@ def evaluate(model, data_loader, loss_history, criterion):
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n' +
           'Top 5 Accuracy: ' + '{:.2f}%\n'.format(100 * torch.mean(torch.tensor(topk_samples))))
 
-N_EPOCHS = 2000
+N_EPOCHS = 600
 TOTAL_SAMPLES = len(train_dataset)//N_TOKENS
 print("total samples in test: {}".format(TOTAL_SAMPLES))
 NUM_TRAINING_STEPS = TOTAL_SAMPLES // BATCH_SIZE_TEST * N_EPOCHS
@@ -270,11 +263,11 @@ config = dict(
     model_dim=MODEL_DIM,
     seq_len=N_TOKENS,
     dataset="Omniglot",
-    architecture="RN50-flatRepTransNoSeq")
+    architecture="RN18-flatRepTransNoSeq")
 
-with wandb.init(project="RN50-SeqTrans-Omniglot", config=config):
-    conv_model = timm.create_model('resnet50', pretrained=True)
-    conv_model.fc = torch.nn.Linear(2048, MODEL_DIM)
+with wandb.init(project="RN18-SeqTrans-Omniglot", config=config):
+    conv_model = timm.create_model('resnet18', pretrained=False)
+    conv_model.fc = torch.nn.Linear(512, MODEL_DIM)
 
     label_embed = torch.nn.Embedding(NUM_CLASSES, MODEL_DIM).cuda()
     num_tensor = torch.tensor([i for i in range(NUM_CLASSES)]).cuda().detach()
