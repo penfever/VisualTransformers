@@ -131,8 +131,8 @@ class seqTrans(nn.Module):
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 # print(device)
-BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 200
-N_TOKENS = 2
+BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 100
+N_TOKENS = 4
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
 MODEL_DIM = 128
@@ -282,7 +282,7 @@ with wandb.init(project="RN18-SeqTrans-Omniglot", config=config):
     criterion = F.nll_loss
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     scheduler = get_cosine_schedule_with_warmup(
-    optimizer, num_warmup_steps=NUM_TRAINING_STEPS//50, 
+    optimizer, num_warmup_steps=NUM_TRAINING_STEPS//8, 
     num_training_steps=NUM_TRAINING_STEPS)
     # scheduler = None
     train_loss_history, test_loss_history = [], []
