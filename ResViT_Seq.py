@@ -10,8 +10,8 @@ import torch.nn.init as init
 import math
 from torch.nn import MultiheadAttention
 import wandb
-from transformers import AdamW
 from transformers.optimization import get_cosine_schedule_with_warmup
+from model.transformer import Transformer as VAS_Transformer
 
 def _weights_init(m):
     classname = m.__class__.__name__
@@ -101,7 +101,8 @@ class seqTrans(nn.Module):
             dim_model=dim, dropout_p=dropout, max_len=5000
         )
         self.dropout = nn.Dropout(emb_dropout)
-        self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
+        self.transformer = VAS_Transformer(num_classes, num_classes, n_layers=12, hidden_size=dim, dropout_rate=dropout, src_pad_idx=0, trg_pad_idx=0)
+        # self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
         self.to_cls_token = nn.Identity()  #TODO: consider using linear, tanh for this a la BERT
         
     def forward(self, seq_x, seq_y, mask = None):
@@ -122,10 +123,14 @@ class seqTrans(nn.Module):
         else:
             x = x.unsqueeze(dim=1)
         x = self.positional_encoder(x)
-        x = self.transformer(x, mask)
+        # tgt = torch.empty_like(x)
+        # torch.nn.init.xavier_uniform_(tgt)
+        x = self.transformer(x, x)
         x = self.to_cls_token(x[:, -1])
         return x
 
+device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
+# print(device)
 BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 200
 N_TOKENS = 2
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
@@ -172,14 +177,14 @@ def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None
         optimizer.zero_grad()
         if len(target) < BATCH_SIZE_TRAIN:
           continue
-        data = data.cuda()
+        data = data.to(device=device)
         data_s = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
         assert(torch.equal(data, data_s.view(BATCH_SIZE_TRAIN, 3, 105, 105)))
         data = data_s
-        target = target.cuda()
+        target = target.to(device=device)
         target = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
         final_idx = [N_TOKENS-1 for i in range(BATCH_SIZE_TRAIN//N_TOKENS)]
-        ids = torch.Tensor(final_idx).long().cuda()
+        ids = torch.Tensor(final_idx).long().to(device=device)
         true_target = target.gather(1, ids.view(-1,1)).clone()
         output = F.log_softmax(model(data, target), dim=1)
         loss = criterion(output, true_target.squeeze(dim=1))
@@ -229,12 +234,12 @@ def evaluate(model, data_loader, loss_history, criterion):
         for data, target in data_loader:
             if len(target) < BATCH_SIZE_TRAIN:
                 continue
-            data = data.cuda()
+            data = data.to(device=device)
             data = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
-            target = target.cuda()
+            target = target.to(device=device)
             target = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
             final_idx = [N_TOKENS-1 for i in range(BATCH_SIZE_TRAIN//N_TOKENS)]
-            ids = torch.Tensor(final_idx).long().cuda()
+            ids = torch.Tensor(final_idx).long().to(device=device)
             true_target = target.gather(1, ids.view(-1,1)).clone()
             output = F.log_softmax(model(data, target), dim=1)
             loss = criterion(output, true_target.squeeze(dim=1), reduction='sum')
@@ -269,13 +274,13 @@ with wandb.init(project="RN18-SeqTrans-Omniglot", config=config):
     conv_model = timm.create_model('resnet18', pretrained=False)
     conv_model.fc = torch.nn.Linear(512, MODEL_DIM)
 
-    label_embed = torch.nn.Embedding(NUM_CLASSES, MODEL_DIM).cuda()
-    num_tensor = torch.tensor([i for i in range(NUM_CLASSES)]).cuda().detach()
-    all_labels = label_embed(num_tensor).cuda().detach()
+    label_embed = torch.nn.Embedding(NUM_CLASSES, MODEL_DIM).to(device=device)
+    num_tensor = torch.tensor([i for i in range(NUM_CLASSES)]).to(device=device).detach()
+    all_labels = label_embed(num_tensor).to(device=device).detach()
 
-    model = seqTrans(conv_model=conv_model, label_embedding = label_embed, all_labels = all_labels, dim=MODEL_DIM, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).cuda()
+    model = seqTrans(conv_model=conv_model, label_embedding = label_embed, all_labels = all_labels, dim=MODEL_DIM, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).to(device=device)
     criterion = F.nll_loss
-    optimizer = AdamW(model.parameters(), lr=LR)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     scheduler = get_cosine_schedule_with_warmup(
     optimizer, num_warmup_steps=NUM_TRAINING_STEPS//50, 
     num_training_steps=NUM_TRAINING_STEPS)
