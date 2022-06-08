@@ -41,13 +41,13 @@ class Transformer(nn.Module):
             identity = x
             x = self.attn(x, x, x)
             x = self.layer_norm(x[0]) + identity
-            identity = x
-            x = self.nn1(x)
-            x = self.af1(x)
-            x = self.do1(x)
-            x = self.nn2(x)
-            x = self.do2(x)
-            x = self.layer_norm(x) + identity
+            # identity = x
+            # x = self.nn1(x)
+            # x = self.af1(x)
+            # x = self.do1(x)
+            # x = self.nn2(x)
+            # x = self.do2(x)
+            # x = self.layer_norm(x) + identity
         return x
 
 class PositionalEncoding(nn.Module):
@@ -95,7 +95,6 @@ class seqTrans(nn.Module):
         self.num_tokens = num_tokens
         self.n_seq = BATCH_SIZE_TRAIN // self.num_tokens
         self.conv_model = conv_model
-        self.in_planes = 64 #controls how many channels the model expects
         self.num_classes = num_classes
         self.apply(_weights_init)
         self.positional_encoder = PositionalEncoding(
@@ -104,9 +103,6 @@ class seqTrans(nn.Module):
         self.dropout = nn.Dropout(emb_dropout)
         self.transformer = Transformer(dim, depth, heads, mlp_dim, dropout)
         self.to_cls_token = nn.Identity()  #TODO: consider using linear, tanh for this a la BERT
-        self.nn1 = nn.Linear(dim, self.num_classes)  # if finetuning, just use a linear layer without further hidden layers (paper)
-        torch.nn.init.xavier_uniform_(self.nn1.weight)
-        torch.nn.init.normal_(self.nn1.bias, std = 1e-6)
         
     def forward(self, seq_x, seq_y, mask = None):
         x = conv_model(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105))
@@ -117,8 +113,6 @@ class seqTrans(nn.Module):
         y = self.label_embed(seq_y) * (self.dim ** -0.5)
         if self.num_tokens > 1:
             x = build_seq(x, y)
-            # print(x.size())
-            # x = rearrange(x, 'b c h w -> b (h w) c') # nXn convolution output reshaped to [batch_size, (n^2), c]
             x = x.reshape(self.n_seq, self.num_tokens * 2, self.dim)
             #TESTS
             assert(torch.equal(x[0, 0, :], dup_x[0, :]))
@@ -131,11 +125,10 @@ class seqTrans(nn.Module):
         x = self.transformer(x, mask)
         x = self.to_cls_token(x[:, -1])
         # Compute the euclidean distance from queries to prototypes
-        dists = torch.cdist(x, self.all_labels)
-        return dists
+        return x
 
 BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 200
-N_TOKENS = 4
+N_TOKENS = 2
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
 MODEL_DIM = 256
@@ -266,7 +259,7 @@ def evaluate(model, data_loader, loss_history, criterion):
 
 N_EPOCHS = 2000
 TOTAL_SAMPLES = len(train_dataset)//N_TOKENS
-print(TOTAL_SAMPLES)
+print("total samples in test: {}".format(TOTAL_SAMPLES))
 NUM_TRAINING_STEPS = TOTAL_SAMPLES // BATCH_SIZE_TEST * N_EPOCHS
 
 config = dict(
