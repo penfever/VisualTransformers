@@ -264,7 +264,7 @@ def evaluate(model, data_loader, loss_history, criterion):
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n' +
           'Top 5 Accuracy: ' + '{:.2f}%\n'.format(100 * torch.mean(torch.tensor(topk_samples))))
 
-N_EPOCHS = 1000
+N_EPOCHS = 2000
 TOTAL_SAMPLES = len(train_dataset)//N_TOKENS
 print(TOTAL_SAMPLES)
 NUM_TRAINING_STEPS = TOTAL_SAMPLES // BATCH_SIZE_TEST * N_EPOCHS
@@ -291,7 +291,7 @@ with wandb.init(project="RN50-SeqTrans-Omniglot", config=config):
     criterion = F.nll_loss
     optimizer = AdamW(model.parameters(), lr=LR)
     scheduler = get_cosine_schedule_with_warmup(
-    optimizer, num_warmup_steps=NUM_TRAINING_STEPS//100, 
+    optimizer, num_warmup_steps=NUM_TRAINING_STEPS//50, 
     num_training_steps=NUM_TRAINING_STEPS)
     # scheduler = None
     train_loss_history, test_loss_history = [], []
