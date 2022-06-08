@@ -87,15 +87,19 @@ def build_seq(image_vec, label_vec):
     return embed_full
 
 class seqTrans(nn.Module):
-    def __init__(self, conv_model, label_embedding, all_labels, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
+    def __init__(self, batch_size, label_embedding, all_labels, num_classes=10, dim = 64, num_tokens = 64, mlp_dim = 256, heads = 8, depth = 12, emb_dropout = 0.1, dropout= 0.1):
         super(seqTrans, self).__init__()
         self.dim = dim
         self.label_embed = label_embedding
         self.all_labels = all_labels
         self.num_tokens = num_tokens
-        self.n_seq = BATCH_SIZE_TRAIN // self.num_tokens
-        self.conv_model = conv_model
+        self.batch_size = batch_size
+        self.n_seq = self.batch_size // self.num_tokens
+        self.conv_model = timm.create_model('resnet18', pretrained=False)
+        self.conv_model.fc = torch.nn.Linear(512, MODEL_DIM)
         self.num_classes = num_classes
+        # self.tgt = torch.tensor((BATCH_SIZE_TEST//N_TOKENS, N_TOKENS, dim))
+        # torch.nn.init.xavier_uniform_(self.tgt)
         self.apply(_weights_init)
         self.positional_encoder = PositionalEncoding(
             dim_model=dim, dropout_p=dropout, max_len=5000
@@ -106,10 +110,10 @@ class seqTrans(nn.Module):
         self.to_cls_token = nn.Identity()  #TODO: consider using linear, tanh for this a la BERT
         
     def forward(self, seq_x, seq_y, mask = None):
-        x = conv_model(seq_x.view(BATCH_SIZE_TRAIN, 3, 105, 105))
+        x = self.conv_model(seq_x.view(self.batch_size, 3, 105, 105))
         dup_x = x
         idx = [self.num_tokens * i + self.num_tokens - 1 for i in range(self.n_seq)]
-        seq_y = seq_y.reshape(BATCH_SIZE_TRAIN)
+        seq_y = seq_y.reshape(self.batch_size)
         seq_y[idx] = self.num_classes-1 #CLS_TOKEN
         y = self.label_embed(seq_y) * (self.dim ** -0.5)
         if self.num_tokens > 1:
@@ -123,15 +127,14 @@ class seqTrans(nn.Module):
         else:
             x = x.unsqueeze(dim=1)
         x = self.positional_encoder(x)
-        # tgt = torch.empty_like(x)
-        # torch.nn.init.xavier_uniform_(tgt)
         x = self.transformer(x, x)
         x = self.to_cls_token(x[:, -1])
         return x
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 # print(device)
-BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 100
+BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 200
+BATCH_SIZE_GPU = BATCH_SIZE_TEST // int(torch.cuda.device_count())
 N_TOKENS = 4
 DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
 SUBSET_SIZE = 100
@@ -140,7 +143,7 @@ transform = torchvision.transforms.Compose(
      [
      torchvision.transforms.Grayscale(num_output_channels=3),
      torchvision.transforms.ToTensor(),
-     # torchvision.transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+     torchvision.transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
      # torchvision.transforms.RandomRotation(0.05),
      torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
 
@@ -168,7 +171,7 @@ test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TE
 
 def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None):
     # Tell wandb to watch what the model gets up to: gradients, weights, and more!
-    wandb.watch(model, criterion, log="all", log_freq=100000)
+    wandb.watch(model, criterion, log="all", log_freq=25000)
     example_ct = 0  # number of examples seen
     total_samples = len(data_loader.dataset)//N_TOKENS
     model.train()
@@ -224,7 +227,7 @@ def accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(1.0 / batch_size))
         return res
 
-def evaluate(model, data_loader, loss_history, criterion):
+def evaluate(model, data_loader, loss_history, criterion, scheduler):
     model.eval()    
     total_samples = len(data_loader.dataset)//N_TOKENS
     topk_samples = []
@@ -248,6 +251,8 @@ def evaluate(model, data_loader, loss_history, criterion):
             correct_samples += pred.eq(true_target.squeeze(dim=1)).sum()
             topk_samples.append(accuracy(output, true_target.squeeze(dim=1), 5))
     avg_loss = total_loss / total_samples
+    # if scheduler is not None:
+    #     scheduler.step(avg_loss)
     wandb.log({"avg_test_loss": avg_loss, "top1_test_accuracy": 100.0 * correct_samples / total_samples, "top5_test_accuracy": 100 * torch.mean(torch.tensor(topk_samples))})
     print('\nAverage test loss: ' + '{:.4f}'.format(avg_loss) + '\n' +
           '  Accuracy:' + '{:5}'.format(correct_samples) + '/' +
@@ -255,7 +260,7 @@ def evaluate(model, data_loader, loss_history, criterion):
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n' +
           'Top 5 Accuracy: ' + '{:.2f}%\n'.format(100 * torch.mean(torch.tensor(topk_samples))))
 
-N_EPOCHS = 600
+N_EPOCHS = 2000
 TOTAL_SAMPLES = len(train_dataset)//N_TOKENS
 print("total samples in test: {}".format(TOTAL_SAMPLES))
 NUM_TRAINING_STEPS = TOTAL_SAMPLES // BATCH_SIZE_TEST * N_EPOCHS
@@ -271,19 +276,19 @@ config = dict(
     architecture="RN18-flatRepTransNoSeq")
 
 with wandb.init(project="RN18-SeqTrans-Omniglot", config=config):
-    conv_model = timm.create_model('resnet18', pretrained=False)
-    conv_model.fc = torch.nn.Linear(512, MODEL_DIM)
-
     label_embed = torch.nn.Embedding(NUM_CLASSES, MODEL_DIM).to(device=device)
     num_tensor = torch.tensor([i for i in range(NUM_CLASSES)]).to(device=device).detach()
     all_labels = label_embed(num_tensor).to(device=device).detach()
-
-    model = seqTrans(conv_model=conv_model, label_embedding = label_embed, all_labels = all_labels, dim=MODEL_DIM, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).to(device=device)
+    model = seqTrans(batch_size = BATCH_SIZE_GPU, label_embedding = label_embed, all_labels = all_labels, dim=MODEL_DIM, num_classes=NUM_CLASSES, num_tokens=N_TOKENS).to(device=device)
+    if torch.cuda.device_count() > 1:
+        print("Using", torch.cuda.device_count(), "GPUs")
+        model = nn.DataParallel(model)
     criterion = F.nll_loss
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     scheduler = get_cosine_schedule_with_warmup(
-    optimizer, num_warmup_steps=NUM_TRAINING_STEPS//8, 
+    optimizer, num_warmup_steps=min(4000, NUM_TRAINING_STEPS) - 2, 
     num_training_steps=NUM_TRAINING_STEPS)
+    # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=10, threshold=0.0001, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-08, verbose=False)
     # scheduler = None
     train_loss_history, test_loss_history = [], []
     for epoch in range(1, N_EPOCHS + 1):
@@ -291,7 +296,7 @@ with wandb.init(project="RN18-SeqTrans-Omniglot", config=config):
         start_time = time.time()
         train(model, optimizer, criterion, train_loader, train_loss_history, scheduler)
         print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
-        evaluate(model, test_loader, test_loss_history, criterion)
+        evaluate(model, test_loader, test_loss_history, criterion, scheduler)
 
     print('Execution time')
 
