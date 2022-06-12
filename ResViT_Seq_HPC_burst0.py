@@ -111,7 +111,8 @@ class seqTrans(nn.Module):
 
 device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 BURSTY = float(0.0)
-N_TOKENS = 9
+#TODO: when N_TOKENS = 9, training fails to converge and LR seems off
+N_TOKENS = 8
 DEV_CT = max(1, int(torch.cuda.device_count()))
 BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 10 * N_TOKENS * DEV_CT
 DISTRIBUTED = True if DEV_CT > 1 else False
