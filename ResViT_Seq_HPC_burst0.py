@@ -157,26 +157,7 @@ print("num classes is {}".format(NUM_CLASSES))
 train_set_size = int(len(DATASET) * 0.8)
 valid_set_size = len(DATASET) - train_set_size
 train_dataset, test_dataset = torch.utils.data.random_split(DATASET, [train_set_size, valid_set_size])
-weights = np.array([float(1/len(labels)) for i in labels])
-pr = np.random.random_sample(size=1)
-#TODO: this code only works with N_TOKENS = 9
-if pr[0] > BURSTY:
-    weights = np.array([float((1/3)/(len(labels)-2)) for i in labels])
-    burst_indices = np.random.randint(len(labels), size=2)
-    weights[burst_indices] = np.array([1/3])
-    assert(np.isclose(np.sum(weights), 1))
-train_sampler = torch.utils.data.WeightedRandomSampler(weights, SAMPLING_SIZE, replacement=True)
-test_sampler = torch.utils.data.RandomSampler(test_dataset, replacement=True, num_samples=SAMPLING_SIZE)
-holdout_sampler = torch.utils.data.RandomSampler(holdout_subset, replacement=True, num_samples=SAMPLING_SIZE)
 
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_TRAIN, num_workers=DEV_CT*8, sampler=train_sampler)
-
-test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TEST, num_workers=DEV_CT*8, sampler=test_sampler)
-
-holdout_loader = torch.utils.data.DataLoader(holdout_subset, batch_size=N_TOKENS, num_workers=DEV_CT*8, sampler=holdout_sampler)
-# print("holdout loader length: ")
-# print(len(holdout_loader.dataset))
-# print(next(iter(holdout_loader)))
 def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None):
     # Tell wandb to watch what the model gets up to: gradients, weights, and more!
     #wandb.watch(model, criterion, log="all", log_freq=25000)
@@ -299,6 +280,28 @@ def fsl_eval(model, data_loader, criterion, scheduler):
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n')
     # device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 
+def build_dataloaders(num_tokens):
+    weights = np.array([float(1/len(labels)) for i in labels])
+    pr = np.random.random_sample(size=1)
+    #TODO: this code only works with num_tokens = 9
+    if pr[0] < BURSTY:
+        print("{} < {}".format(pr[0], BURSTY))
+        print("Bursty training initiated.")
+        weights = np.array([float((1/3)/(len(labels)-2)) for i in labels])
+        burst_indices = np.random.randint(len(labels), size=2)
+        weights[burst_indices] = np.array([1/3])
+        assert(np.isclose(np.sum(weights), 1))
+    train_sampler = torch.utils.data.WeightedRandomSampler(weights, SAMPLING_SIZE, replacement=True)
+    test_sampler = torch.utils.data.RandomSampler(test_dataset, replacement=True, num_samples=SAMPLING_SIZE)
+    holdout_sampler = torch.utils.data.RandomSampler(holdout_subset, replacement=True, num_samples=SAMPLING_SIZE)
+
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_TRAIN, num_workers=DEV_CT*8, sampler=train_sampler)
+
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TEST, num_workers=DEV_CT*8, sampler=test_sampler)
+
+    holdout_loader = torch.utils.data.DataLoader(holdout_subset, batch_size=N_TOKENS, num_workers=DEV_CT*8, sampler=holdout_sampler)
+    return train_loader, test_loader, holdout_loader
+
 N_EPOCHS = 10000
 START = 1
 TOTAL_SAMPLES = len(train_dataset)//N_TOKENS
@@ -352,6 +355,7 @@ with wandb.init(project="RN34-SeqTrans-Omniglot-Burst0", config=config):
     for epoch in range(START, N_EPOCHS + START):
         print('Epoch:', epoch)
         start_time = time.time()
+        train_loader, test_loader, holdout_loader = build_dataloaders(N_TOKENS)
         train(model, optimizer, criterion, train_loader, train_loss_history, scheduler)
         print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
         if epoch % 500 == 1:
