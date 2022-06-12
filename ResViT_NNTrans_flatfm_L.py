@@ -162,10 +162,10 @@ valid_set_size = len(DATASET) - train_set_size
 train_dataset, test_dataset = torch.utils.data.random_split(DATASET, [train_set_size, valid_set_size])
 
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_TRAIN,
-                                          shuffle=True)
+                                          shuffle=True, num_workers=8)
 
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TEST,
-                                         shuffle=False)
+                                         shuffle=False, num_workers=8)
 
 def train_log(output, loss, epoch, example_ct):
     # Where the magic happens
@@ -196,7 +196,7 @@ def accuracy(output, target, topk=(1,)):
 
 def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None):
     # Tell wandb to watch what the model gets up to: gradients, weights, and more!
-    wandb.watch(model, criterion, log="all", log_freq=1000)
+    wandb.watch(model, criterion, log="all", log_freq=10000)
     example_ct = 0  # number of examples seen
     total_samples = len(data_loader.dataset)
     model.train()
@@ -243,12 +243,14 @@ def evaluate(model, data_loader, loss_history, criterion):
             correct_samples += pred.eq(target).sum()
             topk_samples.append(accuracy(output, target, 5))
     avg_loss = total_loss / total_samples
-    wandb.log({"avg_loss": avg_loss, "top1_test_accuracy": 100.0 * correct_samples / total_samples, "top5_test_accuracy": 100 * torch.mean(torch.tensor(topk_samples))})
+    top1_acc = 100.0 * (correct_samples / total_samples)
+    top5_acc = 100 * torch.mean(torch.tensor(topk_samples))
+    wandb.log({"avg_loss": avg_loss, "top1_test_accuracy": top1_acc, "top5_test_accuracy": top5_acc})
     print('\nAverage test loss: ' + '{:.4f}'.format(avg_loss) + '\n' +
           '  Accuracy:' + '{:5}'.format(correct_samples) + '/' +
           '{:5}'.format(total_samples) + ' (' +
-          '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n' +
-          'Top 5 Accuracy: ' + '{:.2f}%\n'.format(100 * torch.mean(torch.tensor(topk_samples))))
+          '{:4.2f}'.format(top1_acc) + '%)\n' +
+          'Top 5 Accuracy: ' + '{:.2f}%\n'.format(top5_acc))
 
 N_EPOCHS = 10 + (NUM_DATASET_CLASSES // NUM_CLASSES) #Need more epochs for smaller subsets
 
