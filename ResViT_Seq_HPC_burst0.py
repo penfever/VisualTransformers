@@ -16,13 +16,14 @@ import torch.nn.functional as F
 from torch import nn
 import torch.nn.init as init
 # from torch.nn import MultiheadAttention
+from transformers import AdamW
 from transformers.optimization import get_cosine_schedule_with_warmup
 from model.transformer import Transformer as VAS_Transformer
 import wandb
 
+# FUNCTIONS AND CLASS DEFINITIONS
+
 def _weights_init(m):
-    classname = m.__class__.__name__
-    #print(classname)
     if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
         init.kaiming_normal_(m.weight)
 
@@ -108,54 +109,6 @@ class seqTrans(nn.Module):
         x = self.to_cls_token(x[:, -1])
         return x
 
-device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
-BURSTY = float(0.0)
-#TODO: when N_TOKENS = 9, training fails to converge and LR seems off
-N_TOKENS = 8
-DEV_CT = max(1, int(torch.cuda.device_count()))
-BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 10 * N_TOKENS * DEV_CT
-DISTRIBUTED = True if DEV_CT > 1 else False
-print("distributed: {}".format(DISTRIBUTED))
-if DISTRIBUTED:
-    BATCH_SIZE_GPU = BATCH_SIZE_TEST // DEV_CT
-    BS_FSL = N_TOKENS // DEV_CT
-else:
-    BATCH_SIZE_GPU = BATCH_SIZE_TEST
-    BS_FSL = N_TOKENS
-SAMPLING_SIZE = BATCH_SIZE_GPU*DEV_CT*5
-DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
-SUBSET_SIZE = 100
-MODEL_DIM = 256
-transform = torchvision.transforms.Compose(
-     [
-     torchvision.transforms.Grayscale(num_output_channels=3),
-     torchvision.transforms.ToTensor(),
-     # torchvision.transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
-     # torchvision.transforms.RandomRotation(0.05),
-     torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
-print("begin loading data: ")
-omniglot = torchvision.datasets.ImageFolder(root=DL_PATH, transform=transform)
-holdout_idx = [i for i in range(len(omniglot)) if omniglot.imgs[:][i][1] < 2]
-holdout_subset = torch.utils.data.Subset(omniglot, holdout_idx)
-if SUBSET_SIZE > 0:
-    main_idx = [i for i in range(len(omniglot)) if omniglot.imgs[:][i][1] < SUBSET_SIZE]
-# build the appropriate subset
-    subset = torch.utils.data.Subset(omniglot, main_idx)
-    DATASET = subset
-else:
-    main_idx = [i for i in range(len(omniglot)) if omniglot.imgs[:][i][1] >= 2]
-    DATASET = torch.utils.data.Subset(omniglot, main_idx)
-    subset = None
-LR = 3e-4
-labels = torch.unique(torch.tensor(omniglot.targets))
-NUM_DATASET_CLASSES = len(labels)
-if DATASET == subset:
-    labels = torch.tensor([i for i in range(SUBSET_SIZE)])
-NUM_CLASSES = len(labels)+1 #add 1 for CLS token
-print("num classes is {}".format(NUM_CLASSES))
-train_set_size = int(len(DATASET) * 0.8)
-valid_set_size = len(DATASET) - train_set_size
-train_dataset, test_dataset = torch.utils.data.random_split(DATASET, [train_set_size, valid_set_size])
 
 def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None):
     # Tell wandb to watch what the model gets up to: gradients, weights, and more!
@@ -164,6 +117,10 @@ def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None
     total_samples = len(data_loader.dataset)//N_TOKENS
     model.train()
     print("LR: {:.6f}".format(optimizer.param_groups[0]['lr']))
+    losses = []
+    min_logprobs = []
+    max_logprobs = []
+    avg_logprobs = []
     for i, (data, target) in enumerate(data_loader):
         optimizer.zero_grad()
         if len(target) < BATCH_SIZE_TRAIN:
@@ -179,6 +136,7 @@ def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None
         true_target = target.gather(1, ids.view(-1,1)).clone()
         output = F.log_softmax(model(data, target, BATCH_SIZE_GPU, N_TOKENS), dim=1)
         loss = criterion(output, true_target.squeeze(dim=1))
+        losses.append(loss.cpu())
         example_ct += len(data)//N_TOKENS
         loss.backward()
         optimizer.step()
@@ -188,15 +146,18 @@ def train(model, optimizer, criterion, data_loader, loss_history, scheduler=None
             print('[' +  '{:5}'.format(i * len(data)) + '/' + '{:5}'.format(total_samples) +
                 ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
                 '{:6.4f}'.format(loss.item()))
-            train_log(output, loss, epoch, example_ct)
-
-def train_log(output, loss, epoch, example_ct):
-    # Where the magic happens
-    min_logprob = torch.min(output).item()
-    max_logprob = torch.max(output).item()
-    avg_logprob = torch.mean(output).item()
-    wandb.log({"min_logprob": min_logprob, "max_logprob": max_logprob, "avg_logprob": avg_logprob, "epoch": epoch, "avg_train_loss": loss, "lr": optimizer.param_groups[0]['lr']}, step=example_ct)
-    print("LOGSOFT: min = {:1.3f}, max = {:1.3f}, mean = {:1.3f} ".format(min_logprob, max_logprob, avg_logprob))
+        min_logprob = torch.min(output).cpu().item()
+        min_logprobs.append(min_logprob)
+        max_logprob = torch.max(output).cpu().item()
+        max_logprobs.append(max_logprob)
+        avg_logprob = torch.mean(output).cpu().item()
+        avg_logprobs.append(avg_logprob)
+    avg_train_loss = torch.mean(torch.tensor(losses))
+    avg_train_min = torch.mean(torch.tensor(min_logprobs))
+    avg_train_max = torch.mean(torch.tensor(max_logprobs))
+    avg_train_avg = torch.mean(torch.tensor(avg_logprobs))
+    wandb.log({"min_logprob": avg_train_min, "max_logprob": avg_train_max, "avg_logprob": avg_train_avg, "epoch": epoch, "avg_train_loss": avg_train_loss, "lr": optimizer.param_groups[0]['lr']})
+    return
 
 def accuracy(output, target, topk=(1,)):
     """
@@ -266,6 +227,7 @@ def fsl_eval(model, data_loader, criterion, scheduler):
             target = target.to(device)
             true_target = target[-1].unsqueeze(dim=0).clone()
             target = target.reshape(1, N_TOKENS)
+
             final_idx = [N_TOKENS-1 for i in range(N_TOKENS)]
             ids = torch.Tensor(final_idx).long().to(device=device)
             output = F.log_softmax(model(data, target, N_TOKENS, N_TOKENS), dim=1)
@@ -280,33 +242,104 @@ def fsl_eval(model, data_loader, criterion, scheduler):
           '{:4.2f}'.format(100.0 * correct_samples / total_samples) + '%)\n')
     # device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
 
-def build_dataloaders(num_tokens):
-    weights = np.array([float(1/len(labels)) for i in labels])
-    pr = np.random.random_sample(size=1)
-    #TODO: this code only works with num_tokens = 9
-    if pr[0] < BURSTY:
-        print("{} < {}".format(pr[0], BURSTY))
-        print("Bursty training initiated.")
-        weights = np.array([float((1/3)/(len(labels)-2)) for i in labels])
-        burst_indices = np.random.randint(len(labels), size=2)
-        weights[burst_indices] = np.array([1/3])
-        assert(np.isclose(np.sum(weights), 1))
+def burst_loader(ds, nc):
+    weights = np.array([float(1/nc) for i in range(nc)])
+    weights = np.array([float((1/3)/(nc-2)) for i in range(nc)])
+    burst_indices = np.random.randint(nc, size=2)
+    weights[burst_indices] = np.array([float(1/3)])
+    assert(np.isclose(np.sum(weights), 1))
     train_sampler = torch.utils.data.WeightedRandomSampler(weights, SAMPLING_SIZE, replacement=True)
-    test_sampler = torch.utils.data.RandomSampler(test_dataset, replacement=True, num_samples=SAMPLING_SIZE)
-    holdout_sampler = torch.utils.data.RandomSampler(holdout_subset, replacement=True, num_samples=SAMPLING_SIZE)
+    train_loader = torch.utils.data.DataLoader(ds, batch_size=BATCH_SIZE_TRAIN, num_workers=DEV_CT*8, sampler=train_sampler)
+    return train_loader
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_TRAIN, num_workers=DEV_CT*8, sampler=train_sampler)
+# HYPERPARAMETERS
 
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=BATCH_SIZE_TEST, num_workers=DEV_CT*8, sampler=test_sampler)
-
-    holdout_loader = torch.utils.data.DataLoader(holdout_subset, batch_size=N_TOKENS, num_workers=DEV_CT*8, sampler=holdout_sampler)
-    return train_loader, test_loader, holdout_loader
-
+LR = 3e-4
+device = torch.device('cpu' if not torch.cuda.is_available() else 'cuda')
+BURSTY = float(0.0)
+#TODO: when N_TOKENS = 9, training fails to converge and LR seems off
+N_TOKENS = 8
+DEV_CT = max(1, int(torch.cuda.device_count()))
+BATCH_SIZE_TRAIN = BATCH_SIZE_TEST = 10 * N_TOKENS * DEV_CT
+DISTRIBUTED = True if DEV_CT > 1 else False
+print("distributed: {}".format(DISTRIBUTED))
+if DISTRIBUTED:
+    BATCH_SIZE_GPU = BATCH_SIZE_TEST // DEV_CT
+    BS_FSL = N_TOKENS // DEV_CT
+else:
+    BATCH_SIZE_GPU = BATCH_SIZE_TEST
+    BS_FSL = N_TOKENS
+SAMPLING_SIZE = BATCH_SIZE_GPU*DEV_CT*5
+DL_PATH = "/data/bf996/omniglot_merge/" # Use your own path
+SUBSET_SIZE = 100
+MODEL_DIM = 256
 N_EPOCHS = 10000
 START = 1
+SAVE_FREQ = 100
+WARMUP = 4000
+TOTAL_STEPS = 100000
+
+
+# TRANSFORMS
+
+transform = torchvision.transforms.Compose(
+     [
+     torchvision.transforms.Grayscale(num_output_channels=3),
+     torchvision.transforms.ToTensor(),
+     # torchvision.transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.2),
+     # torchvision.transforms.RandomRotation(0.05),
+     torchvision.transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))])
+
+print("begin loading data: ")
+
+# MAIN DATASET
+
+omniglot = torchvision.datasets.ImageFolder(root=DL_PATH, transform=transform)
+
+# HOLDOUT DATASET FOR FSL
+
+holdout_idx = [i for i in range(len(omniglot)) if omniglot.imgs[:][i][1] < 2]
+holdout_subset = torch.utils.data.Subset(omniglot, holdout_idx)
+holdout_sampler = torch.utils.data.RandomSampler(holdout_subset, replacement=True, num_samples=SAMPLING_SIZE)
+holdout_loader = torch.utils.data.DataLoader(omniglot, batch_size=N_TOKENS, num_workers=DEV_CT*8, sampler=holdout_sampler)
+
+# SUBSET HANDLING
+
+if SUBSET_SIZE > 0:
+    main_idx = [i for i in range(len(omniglot)) if omniglot.imgs[:][i][1] < SUBSET_SIZE]
+# build the appropriate subset
+    subset = torch.utils.data.Subset(omniglot, main_idx)
+    DATASET = subset
+else:
+    main_idx = [i for i in range(len(omniglot)) if omniglot.imgs[:][i][1] >= 2]
+    DATASET = torch.utils.data.Subset(omniglot, main_idx)
+    subset = None
+labels = torch.unique(torch.tensor(omniglot.targets))
+NUM_DATASET_CLASSES = len(labels)
+if DATASET == subset:
+    labels = torch.tensor([i for i in range(SUBSET_SIZE)])
+NUM_CLASSES = len(labels)+1 #add 1 for CLS token
+print("num classes is {}".format(NUM_CLASSES))
+
+# SPLITTING AND LOADERS
+
+train_set_size = int(len(DATASET) * 0.8)
+valid_set_size = len(DATASET) - train_set_size
+train_dataset, test_dataset = torch.utils.data.random_split(DATASET, [train_set_size, valid_set_size])
+
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=BATCH_SIZE_TRAIN,
+                                          shuffle=True, num_workers=DEV_CT*8)
+test_sampler = torch.utils.data.RandomSampler(test_dataset, replacement=True, num_samples=SAMPLING_SIZE)
+test_loader = torch.utils.data.DataLoader(omniglot, batch_size=BATCH_SIZE_TEST,
+                                         shuffle=False, num_workers=DEV_CT*8, sampler=test_sampler)
+
+bursty_loader = burst_loader(train_dataset, NUM_CLASSES)
+
 TOTAL_SAMPLES = len(train_dataset)//N_TOKENS
 print("total samples in training: {}".format(TOTAL_SAMPLES))
 NUM_TRAINING_STEPS = TOTAL_SAMPLES // BATCH_SIZE_TEST * N_EPOCHS
+HOLD_RATE_STEPS = 10000
+# CONFIG DICT FOR WANDB
 
 config = dict(
     epochs=N_EPOCHS,
@@ -317,6 +350,8 @@ config = dict(
     seq_len=N_TOKENS,
     dataset="Omniglot",
     architecture="RN34-SeqTrans")
+
+# MAIN LOOP
 
 with wandb.init(project="RN34-SeqTrans-Omniglot-Burst0", config=config):
     LATEST = "./ViTRes_Latest.pt"
@@ -335,30 +370,30 @@ with wandb.init(project="RN34-SeqTrans-Omniglot-Burst0", config=config):
         except:
             print("\n Try loading using dataparallel")          
         epoch_file = list(Path(".").glob('*.epoch'))
-        EPOCH_RES = int(epoch_file[0].stem)
+        START = EPOCH_RES = int(epoch_file[0].stem)
         print("Resuming from epoch {}".format(EPOCH_RES))
-        START = EPOCH_RES
-        if EPOCH_RES > 500000:
-            raise("500k epochs reached, breaking")
-        #Adjust target learning rate depending on whre we are in the longer training regimen
-        LR = LR * (1 - (abs(250000 - EPOCH_RES) / 250000))
-        assert(0 < LR < 3e-4)
-    warmup = 250 if EPOCH_RES > 1000 else 4000
+
     criterion = F.nll_loss
     optimizer = torch.optim.AdamW(model.parameters(), lr=LR)
     scheduler = get_cosine_schedule_with_warmup(
-    optimizer, num_warmup_steps=warmup, 
-    num_training_steps=NUM_TRAINING_STEPS)
+    optimizer, num_warmup_steps=WARMUP, 
+    num_training_steps=TOTAL_STEPS)
+    for i in range(EPOCH_RES):
+        scheduler.step()
     # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.9, patience=10, threshold=1e-4, threshold_mode='rel', cooldown=0, min_lr=0, eps=1e-08, verbose=False)
     # scheduler = None
     train_loss_history, test_loss_history = [], []
     for epoch in range(START, N_EPOCHS + START):
         print('Epoch:', epoch)
         start_time = time.time()
-        train_loader, test_loader, holdout_loader = build_dataloaders(N_TOKENS)
+        pr = np.random.random_sample(size=1)
+        if pr[0] < BURSTY:
+            print("{} < {}".format(pr[0], BURSTY))
+            print("Bursty training initiated.")
+            data_loader = bursty_loader
         train(model, optimizer, criterion, train_loader, train_loss_history, scheduler)
         print('Execution time:', '{:5.2f}'.format(time.time() - start_time), 'seconds')
-        if epoch % 500 == 1:
+        if epoch % SAVE_FREQ == 1:
             print("saving model weights for epoch {}".format(epoch))
             now = datetime.now()
             today = date.today()
@@ -377,13 +412,5 @@ with wandb.init(project="RN34-SeqTrans-Omniglot-Burst0", config=config):
             NEXT_PATH.touch()
         if epoch % 10 == 1:
             evaluate(model, test_loader, test_loss_history, criterion, scheduler)
-        if epoch % 50 == 1:
-            fsl_eval(model, holdout_loader, criterion, scheduler)
-
-print('Execution time')
-
-# =============================================================================
-# model = ViT()
-# model.load_state_dict(torch.load(PATH))
-# model.eval()            
-# =============================================================================
+            if epoch % 50 == 1:
+                fsl_eval(model, holdout_loader, criterion, scheduler)
