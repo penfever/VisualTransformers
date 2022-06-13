@@ -20,7 +20,6 @@ from transformers.optimization import get_cosine_schedule_with_warmup
 from model.transformer import Transformer as VAS_Transformer
 import wandb
 
-
 def _weights_init(m):
     classname = m.__class__.__name__
     #print(classname)
@@ -218,7 +217,7 @@ def accuracy(output, target, topk=(1,)):
 
 def evaluate(model, data_loader, loss_history, criterion, scheduler):
     model.eval()    
-    total_samples = len(data_loader.dataset)//N_TOKENS
+    total_samples = 0
     topk_samples = []
     total_loss = 0
     correct_samples = 0
@@ -226,6 +225,7 @@ def evaluate(model, data_loader, loss_history, criterion, scheduler):
         for data, target in data_loader:
             if len(target) < BATCH_SIZE_TRAIN:
                 continue
+            total_samples += (len(data) // N_TOKENS)
             data = data.to(device=device)
             data = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
             target = target.to(device=device)
