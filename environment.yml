@@ -1,7 +1,7 @@
 name: resvit
 channels:
-  - pytorch
   - conda-forge
+  - pytorch
   - defaults
 dependencies:
   - _libgcc_mutex=0.1=main
@@ -169,6 +169,7 @@ dependencies:
     - timm==0.5.4
     - tokenizers==0.12.1
     - torchsummary==1.5.1
+    - transformers==4.19.3
     - typer==0.4.1
     - wandb==0.12.17
     - wasabi==0.9.1
