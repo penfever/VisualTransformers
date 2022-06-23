@@ -1,0 +1,120 @@
+Timer unit: 1e-06 s
+
+Total time: 0.094702 s
+File: main-profile.py
+Function: _weights_init at line 26
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    26                                           def _weights_init(m):
+    27                                               if isinstance(m, nn.Linear) or isinstance(m, nn.Conv2d):
+    28       136         94.0      0.7      0.1          init.kaiming_normal_(m.weight)
+
+Total time: 0.079135 s
+File: main-profile.py
+Function: build_seq at line 59
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    59                                           def build_seq(image_vec, label_vec):
+    60                                               embed_full = image_vec[0]
+    61       205        803.0      3.9      1.0      embed_full = torch.stack((embed_full, label_vec[0]))
+    62       205       3790.0     18.5      4.8      for i in range(1, len(image_vec)):
+    63      2400       2271.0      0.9      2.9          embed_full = torch.cat((embed_full, image_vec[i].unsqueeze(0)))
+    64      2195      36994.0     16.9     46.7          embed_full = torch.cat((embed_full, label_vec[i].unsqueeze(0)))
+    65      2195      35221.0     16.0     44.5      return embed_full
+
+Total time: 4.67197 s
+File: main-profile.py
+Function: forward at line 87
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+    87                                               def forward(self, seq_x, seq_y, bs, nt, mask = None):
+    88                                                   # NOTE: bs expects to be divisible by 2
+    89                                                   n_seq = bs // nt
+    90       205        249.0      1.2      0.0          x = self.conv_model(seq_x.view(bs, 3, 105, 105))
+    91       205    1032226.0   5035.2     22.1          dup_x = x
+    92       205        235.0      1.1      0.0          idx = [nt * i + nt - 1 for i in range(n_seq)]
+    93       205        755.0      3.7      0.0          seq_y = seq_y.reshape(bs)
+    94       205        943.0      4.6      0.0          seq_y[idx] = self.num_classes-1 #CLS_TOKEN
+    95       205     149128.0    727.5      3.2          y = self.label_embed(seq_y) * (self.dim ** -0.5)
+    96       205       9711.0     47.4      0.2          if nt > 1:
+    97       205        158.0      0.8      0.0              x = build_seq(x, y)
+    98       205      82559.0    402.7      1.8              x = x.reshape(n_seq, nt * 2, self.dim)
+    99       205        913.0      4.5      0.0              #TESTS
+   100                                                       assert(torch.equal(x[0, 0, :], dup_x[0, :]))
+   101       205       9400.0     45.9      0.2              assert(torch.equal(x[0, 2, :], dup_x[1, :]))
+   102       205       6469.0     31.6      0.1              assert(torch.equal(x[0, 1, :], y[0, :]))
+   103       205       5859.0     28.6      0.1              assert(torch.equal(x[0, 3, :], y[1, :]))
+   104       205       5714.0     27.9      0.1          else:
+   105                                                       x = x.unsqueeze(dim=1)
+   106                                                   x = self.positional_encoder(x)
+   107       205       9037.0     44.1      0.2          x = self.transformer(x, x)
+   108       205    3355230.0  16367.0     71.8          x = self.to_cls_token(x[:, -1])
+   109       205       3256.0     15.9      0.1          return x
+
+Total time: 2578.91 s
+File: main-profile.py
+Function: train at line 112
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   112                                           def train(model, optimizer, criterion, data_loader, epoch, scheduler=None):
+   113                                               # Tell wandb to watch what the model gets up to: gradients, weights, and more!
+   114                                               #wandb.watch(model, criterion, log="all", log_freq=25000)
+   115                                               example_ct = 0  # number of examples seen
+   116      1000       1303.0      1.3      0.0      total_samples = len(data_loader.dataset)//N_TOKENS
+   117      1000       8198.0      8.2      0.0      model.train()
+   118      1000    3975850.0   3975.8      0.2      logging.debug("LR: {:.6f}".format(optimizer.param_groups[0]['lr']))
+   119      1000      19250.0     19.2      0.0      losses = []
+   120      1000        935.0      0.9      0.0      min_logprobs = []
+   121      1000        810.0      0.8      0.0      max_logprobs = []
+   122      1000        873.0      0.9      0.0      avg_logprobs = []
+   123      1000        814.0      0.8      0.0      for i, (data, target) in enumerate(data_loader):
+   124      6000 1061440702.0 176906.8     41.2          optimizer.zero_grad()
+   125      5000   26009224.0   5201.8      1.0          if len(target) < BATCH_SIZE_TRAIN:
+   126      5000      86407.0     17.3      0.0            continue
+   127                                                   data = data.to(device=device)
+   128      5000   32065347.0   6413.1      1.2          data_s = data.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS, 3, 105, 105)
+   129      5000      94356.0     18.9      0.0          assert(torch.equal(data, data_s.view(BATCH_SIZE_TRAIN, 3, 105, 105)))
+   130      5000     856352.0    171.3      0.0          data = data_s
+   131      5000       5533.0      1.1      0.0          target = target.to(device=device)
+   132      5000     146867.0     29.4      0.0          target = target.reshape(BATCH_SIZE_TRAIN//N_TOKENS, N_TOKENS)
+   133      5000      24499.0      4.9      0.0          final_idx = [N_TOKENS-1 for i in range(BATCH_SIZE_TRAIN//N_TOKENS)]
+   134      5000      60808.0     12.2      0.0          ids = torch.Tensor(final_idx).long().to(device=device)
+   135      5000     205767.0     41.2      0.0          true_target = target.gather(1, ids.view(-1,1)).clone()
+   136      5000     241930.0     48.4      0.0          output = F.log_softmax(model(data, target, BATCH_SIZE_GPU, N_TOKENS), dim=1)
+   137      5000  653100220.0 130620.0     25.3          loss = criterion(output, true_target.squeeze(dim=1))
+   138      5000     327778.0     65.6      0.0          losses.append(loss.cpu())
+   139      5000     310580.0     62.1      0.0          example_ct += len(data)//N_TOKENS
+   140      5000      74316.0     14.9      0.0          loss.backward()
+   141      5000  446965728.0  89393.1     17.3          optimizer.step()
+   142      5000  351480765.0  70296.2     13.6          if scheduler is not None:
+   143      5000       7660.0      1.5      0.0              scheduler.step()
+   144      5000     275009.0     55.0      0.0          if i % 4 == 0:
+   145      5000       5643.0      1.1      0.0              logging.debug('[' +  '{:5}'.format(i * len(data)) + '/' + '{:5}'.format(total_samples) +
+   146     10000      72662.0      7.3      0.0                  ' (' + '{:3.0f}'.format(100 * i / len(data_loader)) + '%)]  Loss: ' +
+   147      6000      38601.0      6.4      0.0                  '{:6.4f}'.format(loss.item()))
+   148      2000      63158.0     31.6      0.0          min_logprob = torch.min(output).cpu().item()
+   149      5000     346656.0     69.3      0.0          min_logprobs.append(min_logprob)
+   150      5000       6714.0      1.3      0.0          max_logprob = torch.max(output).cpu().item()
+   151      5000     168699.0     33.7      0.0          max_logprobs.append(max_logprob)
+   152      5000       5333.0      1.1      0.0          avg_logprob = torch.mean(output).cpu().item()
+   153      5000     165303.0     33.1      0.0          avg_logprobs.append(avg_logprob)
+   154      5000       5059.0      1.0      0.0      avg_train_loss = torch.mean(torch.tensor(losses))
+   155      1000     151443.0    151.4      0.0      avg_train_min = torch.mean(torch.tensor(min_logprobs))
+   156      1000      28640.0     28.6      0.0      avg_train_max = torch.mean(torch.tensor(max_logprobs))
+   157      1000      21952.0     22.0      0.0      avg_train_avg = torch.mean(torch.tensor(avg_logprobs))
+   158      1000      20453.0     20.5      0.0      if epoch % 50 == 1:
+   159      1000       2851.0      2.9      0.0          wandb.log({"min_logprob": avg_train_min, "max_logprob": avg_train_max, "avg_logprob": avg_train_avg, "epoch": epoch, "avg_train_loss": avg_train_loss, "lr": optimizer.param_groups[0]['lr']})
+   160        20      21560.0   1078.0      0.0      return
+
+Total time: 0.481843 s
+File: main-profile.py
+Function: burst_loader at line 246
+
+Line #      Hits         Time  Per Hit   % Time  Line Contents
+==============================================================
+   246                                               if not np.isclose(np.sum(weights), 1):
+
